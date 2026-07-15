@@ -1,62 +1,152 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
 
 // ═══════════════════════════════════════════════════════════════════════════
-// THE VOLUME THESIS — v11
-// Changes since v9:
-// - Centicorn reverted to 0.1% × 5000x (v10); Five Flywheels card removed
-// - Fund Size slider removed (doesn't add analytical value)
-// - Default MC sims bumped to 3000 with tighter adaptive scaling at small n
-// - Chart labels flip to left of marker near right edge (no more clipping)
-// - Horsley Bridge legend labels vertically staggered (no more overlap)
-// - Kelly tab: "no edge" explained for tiers with negative Full Kelly
-// - P(≥10x) chart relabeled "top-decile fund" (not "fund-maker")
-// - Head-to-head: top slider controls distributed size (green), in-tab
-//   concentrated slider only
-// - Monte Carlo precision: 3-option toggle (Fast / Standard / Precise)
+// THE VOLUME THESIS — v17
+// v17 changelog:
+// - Overview loads at 30 positions; Concentrated vs Distributed opens with
+//   400 distributed. The two controls are two-way synced: changing either
+//   updates portfolio size on every tab.
+// - Distributed portfolio is GREEN everywhere: sliders, number inputs, and
+//   current-position markers on all charts.
+// - Dilution & Entry Assumptions panel added to the Assumptions tab:
+//   blended entry post-money input plus a per-tier effective-retention
+//   slider (dilution + realization discount), decomposing each tier's
+//   multiple as raw multiple x retention. Edits flow into the custom
+//   distribution and every tab.
+//
+// Prior version (v16):
+// v16 changelog:
+// - Multiples recalibrated to Carta per-round dilution data (A ~19%,
+//   B ~15%, C ~11%, D ~9%): seed-investor retention ~59-53% through a
+//   Series C/D exit, not the ~30% v14-v15 implied. Unicorn tier 30x → 55x,
+//   decacorn 300x → 400x, centicorn 2500x → 5000x, terracorn 12000x →
+//   20000x, and all mid tiers raised accordingly.
+// - Monte Carlo sweep now computes in chunks (3 sizes per tick) with a
+//   visible progress percentage — v15 blocked the main thread and looked
+//   frozen at 1,000-position range.
+// - Follow-on tab now uses the global reserves state (was a separate
+//   40%-defaulted control); reserves sync across all tabs.
+// - Portfolio-size number inputs step by 10 and are wide enough that the
+//   spinner no longer covers digits.
+// - Kelly worked example updated: at honest multiples (55x, 2% cumulative
+//   unicorn rate) single-tier Kelly is POSITIVE (~540 positions full
+//   Kelly).
+//
+// Prior version (v15):
+// v15 changelog:
+// - Default preset: industry average (first-time visitors start from the
+//   honest baseline; blend and YC one click away). Default reserves 10%,
+//   default recycling 10% of committed capital.
+// - Exit horizon control removed; every cohort holds a standardized 10
+//   years from its capital call (Crunchbase: SaaS median 9yr to exit;
+//   SaaStr: 10.0yr median for $1B+ SaaS acquisitions).
+// - Fund economics rebuilt on explicit cohort cashflows with a true
+//   European waterfall (LPs receive 100% until commitments returned, then
+//   80/20). Gross IRR on invested capital satisfies the rule-of-72 check:
+//   3x over 10 years = 11.6%.
+// - Recycling reframed as % of committed capital (0-20%), replacing the
+//   0-100% "fee recycling" control.
+// - Full-distribution Kelly (Thorp 2006) computed live on the Kelly tab;
+//   per-tier "no edge" results reframed as the limitation they are.
+// - Custom assumptions can be saved as a "My assumptions" preset available
+//   on every tab.
+// - Chart x-axes labeled every 100 positions to 1,000; overlap fixed.
+// - Per-tier probability slider ranges scaled to tier magnitude.
+// - Header and all cards pure black.
+//
+// Prior version (v14):
+// v14 changelog:
+// - Distribution expanded from 7 to 12 tiers, spanning total loss through
+//   terracorn ($1T+). Multiples are post-dilution returns to a ~$15M
+//   blended pre-seed/seed entry (Carta 2025 medians).
+// - New sub-$100M exit tier ($30–75M → 2x) capturing small acquisitions.
+// - Three presets: Industry average, YC-calibrated, and a 50/50 blend
+//   (default) modeling a portfolio sourced half from YC, half broader.
+// - Terracorn tier added; base rate counts nine $1T+ VC-backed companies
+//   including SpaceX (June 2026 IPO at $2.1T) and OpenAI (forward-looking
+//   inclusion, disclosed in footer).
+//
+// Prior version (v13):
+// An interactive model of venture portfolio construction under power-law
+// outcome distributions. All distributional assumptions are editable in the
+// Assumptions tab and sourced in the footer.
+//
+// v13 changelog:
+// - Outcome tiers recalibrated to published data: centicorn 0.02%×2000x
+//   (industry) / 0.05% (YC); decacorn 0.12% / 0.3%. Prior rates exceeded
+//   what PitchBook/CB Insights hectocorn counts support (~25-40 VC-backed
+//   companies have ever crossed $100B, out of several hundred thousand
+//   funded).
+// - Default preset: YC-calibrated. Default portfolio size: 150.
+// - Deployment period: 4 years. Portfolio size range: 5–1,000.
+// - Exit horizon input scales J-curve distribution timing (affects IRR,
+//   not MOIC).
+// - Fund economics: management fees reduce investable capital; adjustable
+//   fee recycling (default 100%) offsets per standard seed-fund practice;
+//   carry applies above 1x of committed capital (European waterfall).
+// - Monte Carlo sweeps seeded per portfolio size: reproducible, smooth
+//   curves. Percentile band chart added (10/25/50/75/90th).
+// - Reserve/threshold/check inputs display live delta vs a shared-seed
+//   zero-reserve baseline.
+// - Rare-tier probability inputs display at 0.001% resolution.
+// - Theme: pure black.
 // ═══════════════════════════════════════════════════════════════════════════
 
 const DEFAULTS = {
   preset: "blind",
   skill: 0,
   numInvestments: 30,
-  reserveRatio: 0.4,
+  reserveRatio: 0.10,
   markupThreshold: 3,
   followOnMult: 2,
-  exitYears: 10,
-  pacingPreset: "seed",
+  recyclePct: 0.10,   // fraction of committed capital recycled (0-20%)
 };
 
-const DEPLOYMENT_YEARS = 3;
+const DEPLOYMENT_YEARS = 4;
 
-// Distribution pacing presets — cumulative % returned by year
-// Earlier distributions compound at higher effective rates, which is why
-// realistic IRR is much higher than naive MOIC^(1/years).
-const PACING_PRESETS = {
-  seed:    { label: "Seed",     years: [3, 5, 7, 9, 11, 13, 15], cum: [0, 0.05, 0.20, 0.50, 0.80, 0.95, 1.0] },
-  seriesA: { label: "Series A", years: [3, 5, 7, 9, 11, 13, 15], cum: [0, 0.10, 0.35, 0.65, 0.88, 1.0,  1.0] },
-  growth:  { label: "Growth",   years: [3, 5, 7, 9, 11, 13, 15], cum: [0.05, 0.25, 0.55, 0.80, 0.95, 1.0, 1.0] },
-};
 
 // ─── PRESETS ─────────────────────────────────────────────────────────────────
+// 12-tier outcome distributions. Multiples are post-dilution returns to a
+// blended pre-seed/seed entry (~$15M post-money: Carta 2025 medians are
+// $10M pre-seed SAFE caps and $20M seed post-money). Exit-value bands and
+// probability sources are documented in outcome-distribution-assumptions.md
+// and linked in the footer.
 const PRESET_BLIND_POOL = [
-  { label: "Total Loss (0x)",    multiplier: 0,    prob: 0.55,   color: "#6b1a1a", emoji: "💀" },
-  { label: "Walking Dead (1x)",  multiplier: 1,    prob: 0.15,   color: "#a33d2a", emoji: "🚶" },
-  { label: "Modest Return (3x)", multiplier: 3,    prob: 0.15,   color: "#c4783a", emoji: "✅" },
-  { label: "Good Exit (10x)",    multiplier: 10,   prob: 0.08,   color: "#c8a94e", emoji: "🎯" },
-  { label: "Unicorn ($1B+)",     multiplier: 50,   prob: 0.02,   color: "#4e9e6e", emoji: "🦄" },
-  { label: "Decacorn ($10B+)",   multiplier: 500,  prob: 0.005,  color: "#3a7abf", emoji: "🔥" },
-  { label: "Centicorn ($100B+)", multiplier: 5000, prob: 0.001, color: "#7c5cbf", emoji: "🚀" },
+  { label: "Total Loss (0x)",          multiplier: 0,     prob: 0.52,     color: "#6b1a1a", emoji: "💀" },
+  { label: "Walking Dead (1x)",        multiplier: 1,     prob: 0.13,     color: "#a33d2a", emoji: "🚶" },
+  { label: "Small Exit $30–75M (3x)",  multiplier: 3,     prob: 0.10,     color: "#b06035", emoji: "🤝" },
+  { label: "Exit ~$100–150M (6x)",     multiplier: 6,     prob: 0.12,     color: "#c4783a", emoji: "✅" },
+  { label: "Good Exit ~$400M (15x)",   multiplier: 15,    prob: 0.06,     color: "#c8a94e", emoji: "🎯" },
+  { label: "Big Exit ~$750M (25x)",    multiplier: 25,    prob: 0.025,    color: "#a8b34e", emoji: "🏆" },
+  { label: "Unicorn $1–3B (55x)",      multiplier: 55,    prob: 0.015,    color: "#4e9e6e", emoji: "🦄" },
+  { label: "Mega $3–10B (150x)",       multiplier: 150,   prob: 0.0038,   color: "#3e8e8e", emoji: "💎" },
+  { label: "Decacorn $10–25B (400x)",  multiplier: 400,   prob: 0.0007,   color: "#3a7abf", emoji: "🔥" },
+  { label: "Ultra $25–100B (1200x)",   multiplier: 1200,  prob: 0.0003,   color: "#5a5fbf", emoji: "⚡" },
+  { label: "Centicorn $100B–1T (5000x)", multiplier: 5000, prob: 0.00018, color: "#7c5cbf", emoji: "🚀" },
+  { label: "Terracorn $1T+ (20000x)",  multiplier: 20000, prob: 0.000018, color: "#a55cbf", emoji: "🌌" },
 ];
 
 const PRESET_YC = [
-  { label: "Total Loss (0x)",    multiplier: 0,    prob: 0.45,   color: "#6b1a1a", emoji: "💀" },
-  { label: "Walking Dead (1x)",  multiplier: 1,    prob: 0.18,   color: "#a33d2a", emoji: "🚶" },
-  { label: "Modest Return (3x)", multiplier: 3,    prob: 0.16,   color: "#c4783a", emoji: "✅" },
-  { label: "Good Exit (10x)",    multiplier: 10,   prob: 0.09,   color: "#c8a94e", emoji: "🎯" },
-  { label: "Unicorn ($1B+)",     multiplier: 50,   prob: 0.06,   color: "#4e9e6e", emoji: "🦄" },
-  { label: "Decacorn ($10B+)",   multiplier: 500,  prob: 0.012,  color: "#3a7abf", emoji: "🔥" },
-  { label: "Centicorn ($100B+)", multiplier: 5000, prob: 0.003, color: "#7c5cbf", emoji: "🚀" },
+  { label: "Total Loss (0x)",          multiplier: 0,     prob: 0.42,     color: "#6b1a1a", emoji: "💀" },
+  { label: "Walking Dead (1x)",        multiplier: 1,     prob: 0.14,     color: "#a33d2a", emoji: "🚶" },
+  { label: "Small Exit $30–75M (3x)",  multiplier: 3,     prob: 0.12,     color: "#b06035", emoji: "🤝" },
+  { label: "Exit ~$100–150M (6x)",     multiplier: 6,     prob: 0.14,     color: "#c4783a", emoji: "✅" },
+  { label: "Good Exit ~$400M (15x)",   multiplier: 15,    prob: 0.08,     color: "#c8a94e", emoji: "🎯" },
+  { label: "Big Exit ~$750M (25x)",    multiplier: 25,    prob: 0.035,    color: "#a8b34e", emoji: "🏆" },
+  { label: "Unicorn $1–3B (55x)",      multiplier: 55,    prob: 0.045,    color: "#4e9e6e", emoji: "🦄" },
+  { label: "Mega $3–10B (150x)",       multiplier: 150,   prob: 0.011,    color: "#3e8e8e", emoji: "💎" },
+  { label: "Decacorn $10–25B (400x)",  multiplier: 400,   prob: 0.0019,   color: "#3a7abf", emoji: "🔥" },
+  { label: "Ultra $25–100B (1200x)",   multiplier: 1200,  prob: 0.0006,   color: "#5a5fbf", emoji: "⚡" },
+  { label: "Centicorn $100B–1T (5000x)", multiplier: 5000, prob: 0.00045, color: "#7c5cbf", emoji: "🚀" },
+  { label: "Terracorn $1T+ (20000x)",  multiplier: 20000, prob: 0.00002,  color: "#a55cbf", emoji: "🌌" },
 ];
+
+// 50/50 blend of industry-average and YC-calibrated — models a portfolio
+// sourced half from YC batches and half from the broader early-stage market.
+const PRESET_BLEND = PRESET_BLIND_POOL.map((d, i) => ({
+  ...d,
+  prob: (d.prob + PRESET_YC[i].prob) / 2,
+}));
 
 // ─── MATH ────────────────────────────────────────────────────────────────────
 function normalize(dist) {
@@ -64,13 +154,17 @@ function normalize(dist) {
   return dist.map(d => ({ ...d, prob: d.prob / total }));
 }
 
+// Exit-value band midpoints ($M) per tier index, used by the dilution panel
+// to decompose each tier's multiple into raw multiple x effective retention.
+const EXIT_MIDS = [null, null, 50, 125, 400, 750, 1750, 5500, 15000, 50000, 250000, 1500000];
+
 function applySelection(dist, skill) {
   if (skill === 0) return dist;
   const tiltUp = skill > 0, k = Math.abs(skill);
   return dist.map(d => {
     let p = d.prob;
-    if (d.multiplier >= 50) {
-      p = d.prob * (tiltUp ? 1 + k * (d.multiplier >= 5000 ? 2 : d.multiplier >= 500 ? 1.5 : 1) : 1 - k * 0.6);
+    if (d.multiplier >= 55) {
+      p = d.prob * (tiltUp ? 1 + k * (d.multiplier >= 5000 ? 2 : d.multiplier >= 400 ? 1.5 : 1) : 1 - k * 0.6);
     } else if (d.multiplier === 0) {
       p = tiltUp ? d.prob * (1 - k * 0.15) : d.prob * (1 + k * 0.15);
     }
@@ -175,74 +269,112 @@ function simPortfolio(n, nSim, dist, reserveRatio = 0, markupThreshold = 3, foll
 }
 
 // J-curve aware fund economics — distributions paced over years per the
-// pacing preset, mgmt fees come out 1..10, carry on profits above 1x.
 // IRR computed via NPV bisection.
-function fundEconomics(grossMOIC, pacing, mgmtFeePct = 0.02, mgmtFeeYrs = 10, carryPct = 0.20) {
-  const totalMgmtFees = mgmtFeePct * mgmtFeeYrs;
-  const totalDist = grossMOIC;
-  const distStream = new Array(16).fill(0);
-  for (let i = 0; i < pacing.years.length; i++) {
-    const yr = pacing.years[i];
-    const cumThis = pacing.cum[i];
-    const cumPrev = i === 0 ? 0 : pacing.cum[i - 1];
-    distStream[yr] += (cumThis - cumPrev) * totalDist;
+// Fund economics:
+// Committed capital is called evenly over the deployment period. Management
+// fees (2% x 10yr = 20% of committed) reduce investable capital; recycling
+// (reinvesting early proceeds, expressed as a % of committed capital,
+// typically 0-20%) offsets part of that. Each invested cohort exits
+// HOLD_YEARS after its capital call — standardized at 10 years, anchored to
+// Crunchbase (SaaS median 9yr founding-to-exit) and SaaStr ($1B+ SaaS
+// acquisitions: 10.0yr median). Carry follows a European waterfall: LPs
+// receive 100% of distributions until their full commitment is returned,
+// then 80/20 above that. Gross IRR is computed on invested-capital
+// cashflows; net IRR on LP (committed-capital) cashflows.
+const HOLD_YEARS = 10;
+function fundEconomics(grossMOIC, recycleFrac = 0.10, mgmtFeePct = 0.02, mgmtFeeYrs = 10, carryPct = 0.20) {
+  const feeFrac = Math.min(0.5, mgmtFeePct * mgmtFeeYrs);
+  const investableFrac = Math.min(1, (1 - feeFrac) + Math.max(0, recycleFrac));
+  const grossProceeds = grossMOIC * investableFrac;
+  const D = DEPLOYMENT_YEARS;
+  const maxYear = HOLD_YEARS + D;
+
+  const grossCF = new Array(maxYear + 1).fill(0);
+  for (let y = 0; y < D; y++) {
+    grossCF[y] -= investableFrac / D;
+    grossCF[y + HOLD_YEARS] += (investableFrac / D) * grossMOIC;
   }
-  const grossProfit = Math.max(0, totalDist - 1);
-  const carryAmt = grossProfit * carryPct;
-  const carryScale = totalDist > 0 ? (totalDist - carryAmt) / totalDist : 1;
-  const netDistStream = distStream.map(d => d * carryScale);
-  const lpCashflows = [];
-  for (let y = 0; y <= 15; y++) {
-    let cf = netDistStream[y];
-    if (y === 0) cf -= 1.0;
-    if (y >= 1 && y <= mgmtFeeYrs) cf -= mgmtFeePct;
-    lpCashflows.push(cf);
+
+  const distGross = new Array(maxYear + 1).fill(0);
+  for (let y = 0; y < D; y++) distGross[y + HOLD_YEARS] += grossProceeds / D;
+  const netCF = new Array(maxYear + 1).fill(0);
+  let cumToLP = 0;
+  for (let y = 0; y <= maxYear; y++) {
+    if (y < D) netCF[y] -= 1 / D;
+    let d = distGross[y];
+    if (d > 0) {
+      let toLP = 0;
+      if (cumToLP < 1) {
+        const preferred = Math.min(d, 1 - cumToLP);
+        toLP += preferred;
+        d -= preferred;
+      }
+      toLP += d * (1 - carryPct);
+      cumToLP += toLP;
+      netCF[y] += toLP;
+    }
   }
-  const totalContributed = 1.0 + totalMgmtFees;
-  const totalReceived = lpCashflows.reduce((a, b) => a + Math.max(0, b), 0);
-  const netMOIC = totalReceived / totalContributed;
-  const npv = r => lpCashflows.reduce((s, cf, t) => s + cf / Math.pow(1 + r, t), 0);
-  let lo = -0.99, hi = 5.0;
-  for (let i = 0; i < 100; i++) {
-    const mid = (lo + hi) / 2;
-    if (npv(mid) > 0) lo = mid; else hi = mid;
-  }
-  const netIRR = (lo + hi) / 2;
-  const grossCF = [];
-  for (let y = 0; y <= 15; y++) {
-    let cf = distStream[y];
-    if (y === 0) cf -= 1.0;
-    grossCF.push(cf);
-  }
-  const npvG = r => grossCF.reduce((s, cf, t) => s + cf / Math.pow(1 + r, t), 0);
-  let lo2 = -0.99, hi2 = 5.0;
-  for (let i = 0; i < 100; i++) {
-    const mid = (lo2 + hi2) / 2;
-    if (npvG(mid) > 0) lo2 = mid; else hi2 = mid;
-  }
-  return { netMOIC, netIRR, grossMOIC, grossIRR: (lo2 + hi2) / 2 };
+  const carryAmt = Math.max(0, grossProceeds - cumToLP);
+  const bisectIRR = (cfs) => {
+    const npv = r => cfs.reduce((s, cf, t) => s + cf / Math.pow(1 + r, t), 0);
+    let lo = -0.99, hi = 5.0;
+    for (let i = 0; i < 100; i++) {
+      const mid = (lo + hi) / 2;
+      if (npv(mid) > 0) lo = mid; else hi = mid;
+    }
+    return (lo + hi) / 2;
+  };
+  return {
+    netMOIC: cumToLP,
+    netIRR: bisectIRR(netCF),
+    grossMOIC,
+    grossProceeds,
+    investableFrac,
+    feeFrac,
+    carryAmt,
+    grossIRR: bisectIRR(grossCF),
+  };
 }
 
-function moicToIRR(moic, years = 10) {
-  if (moic <= 0) return -1;
-  return Math.pow(moic, 1 / years) - 1;
+// Full-distribution Kelly: the generalization of Kelly (1956) to a bet
+// whose payoff is drawn from a multi-outcome distribution. Maximizes
+// E[log(1 + f*(R-1))] over the bet fraction f, where R is the return
+// multiple. This is the standard treatment in the academic literature
+// (Thorp 2006, "The Kelly Criterion in Blackjack, Sports Betting, and the
+// Stock Market"; MacLean, Thorp & Ziemba 2011). Solved numerically via
+// golden-section search — there is no closed form for a 12-tier
+// distribution.
+function fullDistributionKelly(dist) {
+  const elg = f => {
+    let e = 0;
+    for (const d of dist) {
+      const r = 1 + f * (d.multiplier - 1);
+      if (r <= 0) return -Infinity;
+      e += d.prob * Math.log(r);
+    }
+    return e;
+  };
+  let lo = 0, hi = 0.9999;
+  const phi = (Math.sqrt(5) - 1) / 2;
+  for (let i = 0; i < 200; i++) {
+    const a = hi - phi * (hi - lo);
+    const b = lo + phi * (hi - lo);
+    if (elg(a) < elg(b)) lo = a; else hi = b;
+  }
+  const f = (lo + hi) / 2;
+  return { f, growth: elg(f) };
 }
 
-function netMOIC(gross) {
-  const afterFees = gross * 0.85;
-  if (afterFees <= 1) return afterFees;
-  return 1 + (afterFees - 1) * 0.8;
-}
 
 function makeCurveSizes() {
   const s = [];
   for (let n = 20;  n <= 100; n += 10) s.push(n);
   for (let n = 125; n <= 300; n += 25) s.push(n);
   for (let n = 350; n <= 500; n += 50) s.push(n);
+  for (let n = 600; n <= 1000; n += 100) s.push(n);
   return s;
 }
 
-// Reserve sweep for Follow-On Strategy tab
 function makeReserveSweep() {
   const s = [];
   for (let r = 0; r <= 0.7; r += 0.05) s.push(+r.toFixed(2));
@@ -256,7 +388,12 @@ const fmtDollar = n => {
   if (n >= 1e3) return `$${(n / 1e3).toFixed(0)}K`;
   return `$${n}`;
 };
-const fmtPct = n => `${(n * 100).toFixed(1)}%`;
+const fmtPct = n => {
+  const pct = n * 100;
+  if (pct !== 0 && Math.abs(pct) < 0.1) return `${pct.toFixed(3)}%`;
+  if (pct !== 0 && Math.abs(pct) < 1)   return `${pct.toFixed(2)}%`;
+  return `${pct.toFixed(1)}%`;
+};
 
 // ─── DEBOUNCE HOOK ───────────────────────────────────────────────────────────
 function useDebounce(value, delay = 200) {
@@ -283,7 +420,7 @@ function Tip({ children, text, width = 240 }) {
       {show && (
         <span style={{
           position: "absolute", bottom: "calc(100% + 6px)", left: "50%", transform: "translateX(-50%)",
-          background: "#1a1a24", border: "1px solid #2a2a3a", color: "#e8e0d0",
+          background: "#141414", border: "1px solid #242424", color: "#e8e0d0",
           padding: "8px 12px", borderRadius: 6, fontSize: 11, lineHeight: 1.5,
           width, zIndex: 100, boxShadow: "0 4px 16px rgba(0,0,0,0.5)",
           fontFamily: "'DM Mono', monospace", letterSpacing: 0, textTransform: "none", fontWeight: 400,
@@ -318,14 +455,14 @@ function CDFChart({ dataA, dataB, labelA, labelB, colorA, colorB }) {
       {[0, 0.25, 0.5, 0.75, 1].map(t => {
         const y = yS(t);
         return (<g key={t}>
-          <line x1={pad.l} y1={y} x2={W - pad.r} y2={y} stroke="#1e1e2e" strokeWidth="1" />
+          <line x1={pad.l} y1={y} x2={W - pad.r} y2={y} stroke="#1a1a1a" strokeWidth="1" />
           <text x={pad.l - 6} y={y + 4} fontSize="10" fill="#555" textAnchor="end">{(t * 100).toFixed(0)}%</text>
         </g>);
       })}
       {keyThresholds.map(x => {
         const xp = xS(x);
         return (<g key={x}>
-          <line x1={xp} y1={pad.t} x2={xp} y2={pad.t + yH} stroke="#1e1e2e" strokeWidth="1" strokeDasharray="2,3" />
+          <line x1={xp} y1={pad.t} x2={xp} y2={pad.t + yH} stroke="#1a1a1a" strokeWidth="1" strokeDasharray="2,3" />
           <text x={xp} y={H - 22} fontSize="10" fill="#666" textAnchor="middle">{x}x</text>
         </g>);
       })}
@@ -341,8 +478,8 @@ function CDFChart({ dataA, dataB, labelA, labelB, colorA, colorB }) {
       {[1, 3].map(x => {
         const pA = cdf(dataA, x), pB = cdf(dataB, x);
         return (<g key={`ann-${x}`}>
-          <circle cx={xS(x)} cy={yS(pA)} r="4" fill={colorA} stroke="#0c0c0f" strokeWidth="1.5" />
-          <circle cx={xS(x)} cy={yS(pB)} r="4" fill={colorB} stroke="#0c0c0f" strokeWidth="1.5" />
+          <circle cx={xS(x)} cy={yS(pA)} r="4" fill={colorA} stroke="#000000" strokeWidth="1.5" />
+          <circle cx={xS(x)} cy={yS(pB)} r="4" fill={colorB} stroke="#000000" strokeWidth="1.5" />
         </g>);
       })}
 
@@ -371,6 +508,61 @@ function smooth(arr) {
     out[i] = (arr[i - 1] + arr[i] + arr[i + 1]) / 3;
   }
   return out;
+}
+
+// Percentile band chart — shows the outcome funnel narrowing with portfolio
+// size. The visual argument for consistency: the band tightens around the
+// median as n grows.
+function BandChart({ sizes, med, q10, q25, q75, q90, currentN, height = 200, onSelectN = null }) {
+  const W = 640, H = height;
+  const pad = { l: 42, r: 14, t: 12, b: 30 };
+  const maxY = Math.max(...q90) * 1.08;
+  const minY = 0;
+  const x = n => pad.l + ((n - sizes[0]) / (sizes[sizes.length - 1] - sizes[0])) * (W - pad.l - pad.r);
+  const y = v => H - pad.b - ((v - minY) / (maxY - minY)) * (H - pad.t - pad.b);
+  const line = vals => sizes.map((n, i) => `${i === 0 ? "M" : "L"} ${x(n).toFixed(1)} ${y(vals[i]).toFixed(1)}`).join(" ");
+  const area = (top, bot) => {
+    const fwd = sizes.map((n, i) => `${i === 0 ? "M" : "L"} ${x(n).toFixed(1)} ${y(top[i]).toFixed(1)}`).join(" ");
+    const back = [...sizes].reverse().map((n) => {
+      const i = sizes.indexOf(n);
+      return `L ${x(n).toFixed(1)} ${y(bot[i]).toFixed(1)}`;
+    }).join(" ");
+    return `${fwd} ${back} Z`;
+  };
+  const handleClick = e => {
+    if (!onSelectN) return;
+    const svg = e.currentTarget;
+    const rect = svg.getBoundingClientRect();
+    const px = ((e.clientX - rect.left) / rect.width) * W;
+    const frac = Math.max(0, Math.min(1, (px - pad.l) / (W - pad.l - pad.r)));
+    const n = Math.round((sizes[0] + frac * (sizes[sizes.length - 1] - sizes[0])) / 5) * 5;
+    onSelectN(Math.max(5, Math.min(1000, n)));
+  };
+  const gridVals = [0, maxY * 0.25, maxY * 0.5, maxY * 0.75, maxY];
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} style={{ width: "100%", cursor: onSelectN ? "crosshair" : "default" }} onClick={handleClick}>
+      {gridVals.map((v, i) => (
+        <g key={i}>
+          <line x1={pad.l} y1={y(v)} x2={W - pad.r} y2={y(v)} stroke="#141414" strokeWidth="1" />
+          <text x={pad.l - 6} y={y(v) + 3} fontSize="9" fill="#555" textAnchor="end">{v.toFixed(1)}x</text>
+        </g>
+      ))}
+      <path d={area(q90, q10)} fill="#c8a94e" fillOpacity="0.10" />
+      <path d={area(q75, q25)} fill="#c8a94e" fillOpacity="0.16" />
+      <path d={line(q90)} fill="none" stroke="#c8a94e" strokeWidth="1" strokeOpacity="0.35" strokeDasharray="3,3" />
+      <path d={line(q10)} fill="none" stroke="#c8a94e" strokeWidth="1" strokeOpacity="0.35" strokeDasharray="3,3" />
+      <path d={line(med)} fill="none" stroke="#c8a94e" strokeWidth="2.5" strokeLinejoin="round" />
+      {currentN >= sizes[0] && currentN <= sizes[sizes.length - 1] && (
+        <line x1={x(currentN)} y1={pad.t} x2={x(currentN)} y2={H - pad.b} stroke="#4e9e6e" strokeWidth="1" strokeDasharray="4,4" strokeOpacity="0.7" />
+      )}
+      {[100, 200, 300, 400, 500, 600, 700, 800, 900, 1000].filter(v => v >= sizes[0] && v <= sizes[sizes.length - 1]).map(n => (
+        <text key={n} x={x(n)} y={H - pad.b + 14} fontSize="8.5" fill="#555" textAnchor="middle">{n}</text>
+      ))}
+      <text x={(pad.l + W - pad.r) / 2} y={H - 2} fontSize="9" fill="#555" textAnchor="middle">Portfolio size (positions over {"4"}-year deployment)</text>
+      <text x={W - pad.r - 4} y={y(q90[sizes.length - 1]) - 5} fontSize="9" fill="#8a7433" textAnchor="end">90th pctile</text>
+      <text x={W - pad.r - 4} y={y(q10[sizes.length - 1]) + 12} fontSize="9" fill="#8a7433" textAnchor="end">10th pctile</text>
+    </svg>
+  );
 }
 
 function CurveChart({ sizes, values, color, benchmarks = [], currentN, yFmt, height = 180, onSelectN = null }) {
@@ -416,7 +608,7 @@ function CurveChart({ sizes, values, color, benchmarks = [], currentN, yFmt, hei
       {[0, 1, 2, 3, 4].map(i => {
         const v = minV + (maxV - minV) * (i / 4), y = yS(v);
         return (<g key={i}>
-          <line x1={pad.l} y1={y} x2={W - pad.r} y2={y} stroke="#1e1e2e" strokeWidth="1" />
+          <line x1={pad.l} y1={y} x2={W - pad.r} y2={y} stroke="#1a1a1a" strokeWidth="1" />
           <text x={pad.l - 6} y={y + 4} fontSize="9" fill="#444" textAnchor="end">{yFmt(v)}</text>
         </g>);
       })}
@@ -441,19 +633,19 @@ function CurveChart({ sizes, values, color, benchmarks = [], currentN, yFmt, hei
         return (
           <g>
             <line x1={markerX} y1={pad.t} x2={markerX} y2={pad.t + yH} stroke="#c8a94e" strokeWidth="1.5" />
-            <circle cx={markerX} cy={markerY} r="5" fill="#c8a94e" stroke="#0c0c0f" strokeWidth="1.5" />
-            <text x={labelX} y={markerY - 7} fontSize="10" fill="#c8a94e" fontWeight="500" textAnchor={anchor}>
+            <circle cx={markerX} cy={markerY} r="5" fill="#c8a94e" stroke="#000000" strokeWidth="1.5" />
+            <text x={labelX} y={markerY - 7} fontSize="10" fill="#4e9e6e" fontWeight="500" textAnchor={anchor}>
               {sizes[currentIdx]}: {yFmt(smoothed[currentIdx])}
             </text>
           </g>
         );
       })()}
-      {[20, 50, 100, 200, 300, 500].map(n => {
+      {[100, 200, 300, 400, 500, 600, 700, 800, 900, 1000].map(n => {
         const idx = sizes.findIndex(s => s >= n);
         if (idx < 0) return null;
-        return (<text key={n} x={xS(idx)} y={H - 6} fontSize="9" fill="#444" textAnchor="middle">{n}</text>);
+        return (<text key={n} x={xS(idx)} y={H - 14} fontSize="8.5" fill="#444" textAnchor="middle">{n}</text>);
       })}
-      <text x={W / 2} y={H} fontSize="9" fill="#555" textAnchor="middle">Portfolio size →</text>
+      <text x={W / 2} y={H - 2} fontSize="9" fill="#555" textAnchor="middle">Portfolio size →</text>
     </svg>
   );
 }
@@ -471,14 +663,14 @@ function OutlierChart({ curves, currentN }) {
     <svg width="100%" viewBox={`0 0 ${W} ${H}`}>
       {[0, 0.25, 0.5, 0.75, 1].map(p => (
         <g key={p}>
-          <line x1={pad.l} y1={yS(p)} x2={W - pad.r} y2={yS(p)} stroke="#1e1e2e" strokeWidth="1" />
+          <line x1={pad.l} y1={yS(p)} x2={W - pad.r} y2={yS(p)} stroke="#1a1a1a" strokeWidth="1" />
           <text x={pad.l - 6} y={yS(p) + 4} fontSize="9" fill="#444" textAnchor="end">{(p * 100).toFixed(0)}%</text>
         </g>
       ))}
       {[50, 100, 150, 200, 250, 300].map(n => (
         <text key={n} x={xS(n)} y={H - 10} fontSize="9" fill="#444" textAnchor="middle">{n}</text>
       ))}
-      <text x={(pad.l + (W - pad.r)) / 2} y={H} fontSize="9" fill="#555" textAnchor="middle">Portfolio size (positions over 3-year deployment)</text>
+      <text x={(pad.l + (W - pad.r)) / 2} y={H} fontSize="9" fill="#555" textAnchor="middle">Portfolio size (positions over 4-year deployment)</text>
 
       {curves.map((c, ci) => {
         const pts = c.data.filter(d => d.n <= maxN);
@@ -528,7 +720,7 @@ function MultiLineChart({ xValues, series, xFmt, yFmt, xLabel, optimalX }) {
       {[0, 1, 2, 3, 4].map(i => {
         const v = minY + (maxY - minY) * (i / 4), y = yS(v);
         return (<g key={i}>
-          <line x1={pad.l} y1={y} x2={W - pad.r} y2={y} stroke="#1e1e2e" strokeWidth="1" />
+          <line x1={pad.l} y1={y} x2={W - pad.r} y2={y} stroke="#1a1a1a" strokeWidth="1" />
           <text x={pad.l - 6} y={y + 4} fontSize="9" fill="#444" textAnchor="end">{yFmt(v)}</text>
         </g>);
       })}
@@ -570,6 +762,8 @@ function MultiLineChart({ xValues, series, xFmt, yFmt, xLabel, optimalX }) {
 export default function App() {
   const [preset, setPreset] = useState(DEFAULTS.preset);
   const [customDist, setCustomDist] = useState(null);
+  const [savedDist, setSavedDist] = useState(null);   // user-saved custom distribution
+  const [entryVal, setEntryVal] = useState(15);        // blended entry post-money, $M
   const [skillPt, setSkillPt] = useState(3); // 5-point: 1-5, default 3 (average)
   const skill = skillValue(skillPt); // internal value -1 to +1 for applySelection
   const [numInvestments, setNumInvestments] = useState(DEFAULTS.numInvestments);
@@ -578,21 +772,28 @@ export default function App() {
   const [reserveRatio, setReserveRatio] = useState(DEFAULTS.reserveRatio);
   const [markupThreshold, setMarkupThreshold] = useState(DEFAULTS.markupThreshold);
   const [followOnMult, setFollowOnMult] = useState(DEFAULTS.followOnMult);
-  const [exitYears, setExitYears] = useState(DEFAULTS.exitYears);
-  const [pacingPreset, setPacingPreset] = useState(DEFAULTS.pacingPreset);
-  const [showPacingDetails, setShowPacingDetails] = useState(false);
+  const [recyclePct, setRecyclePct] = useState(DEFAULTS.recyclePct);
 
   const [concCount, setConcCount] = useState(30);
-  const [distCount, setDistCount] = useState(200);
+  const [distCount, setDistCount] = useState(400);
+  // Two-way sync: the distributed portfolio IS the portfolio. Each control
+  // pushes to both states on change; independent defaults (30 on load for
+  // the overview narrative, 400 on the head-to-head tab) converge on the
+  // first user interaction with either control.
+  const setPortfolioSize = (n) => {
+    const v = Math.min(1000, Math.max(5, n));
+    setNumInvestments(v);
+    setDistCount(Math.max(30, v));
+  };
   const [concResult, setConcResult] = useState(null);
   const [distResult, setDistResult] = useState(null);
 
   const [mcCurves, setMcCurves] = useState(null);
   const [mcRunning, setMcRunning] = useState(false);
+  const [mcProgress, setMcProgress] = useState(0);
   const [foCurves, setFoCurves] = useState(null);
 
   // Follow-On tab local sliders (independent from globals)
-  const [foReserves, setFoReserves] = useState(0.4);
   const [foThreshold, setFoThreshold] = useState(3);
   const [foMult, setFoMult] = useState(2);
   const [foSinglePoint, setFoSinglePoint] = useState(null);
@@ -611,11 +812,10 @@ export default function App() {
     setReserveRatio(DEFAULTS.reserveRatio);
     setMarkupThreshold(DEFAULTS.markupThreshold);
     setFollowOnMult(DEFAULTS.followOnMult);
-    setExitYears(DEFAULTS.exitYears);
-    setPacingPreset(DEFAULTS.pacingPreset);
+    setRecyclePct(DEFAULTS.recyclePct);
   }
 
-  const baseDist = customDist || (preset === "yc" ? PRESET_YC : PRESET_BLIND_POOL);
+  const baseDist = customDist || (preset === "custom" && savedDist ? savedDist : preset === "yc" ? PRESET_YC : preset === "blend" ? PRESET_BLEND : PRESET_BLIND_POOL);
   const adjustedDist = useMemo(() => applySelection(baseDist, skill), [baseDist, skill]);
   const nd = useMemo(() => normalize(adjustedDist), [adjustedDist]);
 
@@ -632,18 +832,31 @@ export default function App() {
   const dFollowOn = useDebounce(followOnMult, 200);
   const dConcCount = useDebounce(concCount, 200);
   const dDistCount = useDebounce(distCount, 200);
-  const dFoReserves = useDebounce(foReserves, 200);
+  const dFoReserves = useDebounce(reserveRatio, 200);
   const dFoThreshold = useDebounce(foThreshold, 200);
   const dFoMult = useDebounce(foMult, 200);
 
   const [currentMC, setCurrentMC] = useState(null);
   useEffect(() => {
     const id = setTimeout(() => {
-      const r = simPortfolio(dNumInv, 1500, nd, dReserves, dThreshold, dFollowOn, skillPt);
+      const r = simPortfolio(dNumInv, 1500, nd, dReserves, dThreshold, dFollowOn, skillPt, 137);
       setCurrentMC(r);
     }, 10);
     return () => clearTimeout(id);
   }, [dNumInv, nd, dReserves, dThreshold, dFollowOn, skillPt]);
+
+  // Zero-reserve baseline at the same portfolio size — shares the seed with
+  // currentMC so the DELTA shown next to the reserve sliders is pure signal,
+  // not sampling noise. This is what makes reserve/threshold/check effects
+  // visible (v12 fix: they previously moved outcomes but nothing showed it).
+  const [baselineMC, setBaselineMC] = useState(null);
+  useEffect(() => {
+    const id = setTimeout(() => {
+      const r = simPortfolio(dNumInv, 1500, nd, 0, dThreshold, dFollowOn, skillPt, 137);
+      setBaselineMC(r);
+    }, 10);
+    return () => clearTimeout(id);
+  }, [dNumInv, nd, dThreshold, dFollowOn, skillPt]);
 
   // Split conc and dist into separate effects so moving one slider doesn't
   // re-sample the OTHER strategy. Both use a shared base seed so when
@@ -667,27 +880,41 @@ export default function App() {
 
   const runCurves = useCallback((sims = 3000) => {
     setMcRunning(true);
-    setTimeout(() => {
-      const sizes = makeCurveSizes();
-      const fails = [], triples = [], p5s = [], p10s = [], meds = [], vols = [];
-      sizes.forEach(n => {
-        // Adaptive sim count — small n has much higher variance on rare
-        // outcomes (centicorns, decacorns) so we need more draws there.
-        // At n=20-50 with a 0.1% centicorn event, we need ~5× more sims
-        // to get a stable estimate of fund-level P(≥10x).
-        const scaleFactor = n <= 20 ? 4 : n <= 50 ? 3 : n <= 100 ? 2 : n <= 200 ? 1.4 : 1;
+    const sizes = makeCurveSizes();
+    const acc = { sizes, fails: [], triples: [], p5s: [], p10s: [], meds: [], vols: [], q10s: [], q25s: [], q75s: [], q90s: [], sims };
+    let i = 0;
+    // Chunked computation: one portfolio size per tick, so the UI never
+    // freezes and progress is visible. (v15 computed all sizes in a single
+    // synchronous block — at 1,000 positions x 12 tiers it locked the main
+    // thread long enough to look dead.)
+    const step = () => {
+      const chunkEnd = Math.min(i + 3, sizes.length);
+      for (; i < chunkEnd; i++) {
+        const n = sizes[i];
+        const scaleFactor = n <= 20 ? 4 : n <= 50 ? 3 : n <= 100 ? 2 : n <= 200 ? 1.4 : n <= 500 ? 0.8 : 0.4;
         const adjustedSims = Math.round(sims * scaleFactor);
-        const r = simPortfolio(n, adjustedSims, nd, dReserves, dThreshold, dFollowOn, skillPt);
-        fails.push(+(100 - r.p1).toFixed(1));
-        triples.push(+r.p3.toFixed(1));
-        p5s.push(+r.p5.toFixed(1));
-        p10s.push(+r.p10.toFixed(1));
-        meds.push(+r.median.toFixed(2));
-        vols.push(+r.std.toFixed(2));
-      });
-      setMcCurves({ sizes, fails, triples, p5s, p10s, meds, vols, sims });
-      setMcRunning(false);
-    }, 20);
+        const r = simPortfolio(n, adjustedSims, nd, dReserves, dThreshold, dFollowOn, skillPt, 7000 + n);
+        acc.fails.push(+(100 - r.p1).toFixed(1));
+        acc.triples.push(+r.p3.toFixed(1));
+        acc.p5s.push(+r.p5.toFixed(1));
+        acc.p10s.push(+r.p10.toFixed(1));
+        acc.meds.push(+r.median.toFixed(2));
+        acc.vols.push(+r.std.toFixed(2));
+        const q = f => r.res[Math.floor(r.res.length * f)];
+        acc.q10s.push(+q(0.10).toFixed(2));
+        acc.q25s.push(+q(0.25).toFixed(2));
+        acc.q75s.push(+q(0.75).toFixed(2));
+        acc.q90s.push(+Math.min(q(0.90), 50).toFixed(2));
+      }
+      setMcProgress(Math.round((i / sizes.length) * 100));
+      if (i < sizes.length) {
+        setTimeout(step, 0);
+      } else {
+        setMcCurves({ ...acc });
+        setMcRunning(false);
+      }
+    };
+    setTimeout(step, 20);
   }, [nd, dReserves, dThreshold, dFollowOn, skillPt]);
 
   // Auto-run standard precision on dependency change
@@ -734,8 +961,7 @@ export default function App() {
   }, [activeTab, runFoCurves]);
 
   const medianMOIC = currentMC?.median ?? em;
-  const pacing = PACING_PRESETS[pacingPreset];
-  const eco = useMemo(() => fundEconomics(medianMOIC, pacing), [medianMOIC, pacing]);
+  const eco = useMemo(() => fundEconomics(medianMOIC, recyclePct), [medianMOIC, recyclePct]);
   // Legacy aliases (used by render code that we haven't rewritten yet)
   const grossIRR = eco.grossIRR;
   const netMOIC_val = eco.netMOIC;
@@ -752,51 +978,51 @@ export default function App() {
   }, []);
 
   return (
-    <div style={{ fontFamily: "'DM Mono', 'Courier New', monospace", background: "#0c0c0f", minHeight: "100vh", color: "#e8e0d0" }}>
+    <div style={{ fontFamily: "'DM Mono', 'Courier New', monospace", background: "#000000", minHeight: "100vh", color: "#e8e0d0" }}>
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400;500&family=Fraunces:ital,opsz,wght@0,9..144,300;0,9..144,500;0,9..144,700;1,9..144,300&display=swap');
         * { box-sizing: border-box; }
         ::-webkit-scrollbar { width: 4px; }
-        ::-webkit-scrollbar-track { background: #0c0c0f; }
+        ::-webkit-scrollbar-track { background: #000000; }
         ::-webkit-scrollbar-thumb { background: #3a2a1a; }
-        input[type=range] { -webkit-appearance: none; appearance: none; height: 3px; border-radius: 2px; background: #2a2a3a; outline: none; }
+        input[type=range] { -webkit-appearance: none; appearance: none; height: 3px; border-radius: 2px; background: #242424; outline: none; }
         input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 14px; height: 14px; border-radius: 50%; background: #c8a94e; cursor: pointer; }
-        input[type=number], input[type=text] { background: #1a1a24; border: 1px solid #2a2a3a; color: #e8e0d0; padding: 6px 10px; border-radius: 4px; font-family: inherit; font-size: 12px; }
+        input[type=number], input[type=text] { background: #141414; border: 1px solid #242424; color: #e8e0d0; padding: 6px 10px; border-radius: 4px; font-family: inherit; font-size: 12px; }
         .tab-btn { background: none; border: none; color: #888; cursor: pointer; font-family: 'DM Mono', monospace; font-size: 11px; padding: 8px 14px; letter-spacing: 0.08em; text-transform: uppercase; border-bottom: 2px solid transparent; transition: all 0.2s; white-space: nowrap; }
         .tab-btn.active { color: #c8a94e; border-bottom-color: #c8a94e; }
         .tab-btn:hover { color: #e8e0d0; }
-        .stat-card { background: #12121a; border: 1px solid #1e1e2e; border-radius: 8px; padding: 20px; }
-        .dist-row { display: flex; align-items: center; gap: 12px; padding: 7px 0; border-bottom: 1px solid #1a1a24; }
+        .stat-card { background: #000000; border: 1px solid #1a1a1a; border-radius: 8px; padding: 20px; }
+        .dist-row { display: flex; align-items: center; gap: 12px; padding: 7px 0; border-bottom: 1px solid #141414; }
         .dist-row:last-child { border-bottom: none; }
-        .prob-bar-bg { background: #1a1a24; border-radius: 3px; height: 6px; overflow: hidden; }
+        .prob-bar-bg { background: #141414; border-radius: 3px; height: 6px; overflow: hidden; }
         .prob-bar-fill { height: 100%; border-radius: 3px; transition: width 0.4s ease; }
         @keyframes fadeIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
         .fade-in { animation: fadeIn 0.25s ease forwards; }
         .pill { display: inline-block; font-size: 10px; padding: 4px 12px; border-radius: 14px; font-weight: 500; letter-spacing: 0.05em; cursor: pointer; border: 1px solid transparent; transition: all 0.15s; user-select: none; }
-        .pill.active { background: #c8a94e; color: #0c0c0f; border-color: #c8a94e; }
-        .pill.inactive { color: #888; border-color: #2a2a3a; }
+        .pill.active { background: #c8a94e; color: #000000; border-color: #c8a94e; }
+        .pill.inactive { color: #888; border-color: #242424; }
         .pill.inactive:hover { color: #c8a94e; border-color: #c8a94e; }
         .badge { display: inline-block; font-size: 9px; padding: 1px 6px; border-radius: 10px; font-weight: 500; letter-spacing: 0.06em; margin-left: 6px; vertical-align: middle; }
         table { width: 100%; border-collapse: collapse; font-size: 12px; }
         th { padding: 7px 10px; text-align: right; color: #555; font-weight: 400; font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; }
-        td { padding: 9px 10px; text-align: right; border-bottom: 1px solid #12121a; }
+        td { padding: 9px 10px; text-align: right; border-bottom: 1px solid #141414; }
         .label { font-size: 10px; color: #555; letter-spacing: 0.1em; text-transform: uppercase; margin-bottom: 8px; }
         .serif { font-family: 'Fraunces', serif; }
         .help-bar { font-size: 10px; color: #666; margin-top: 4px; font-style: italic; font-family: 'DM Mono', monospace; letter-spacing: 0; text-transform: none; }
         .callout { padding: 12px 16px; background: #0a0a12; border-left: 2px solid #c8a94e; border-radius: 0 4px 4px 0; font-size: 12px; color: #aaa; line-height: 1.7; }
-        input[type=number].inline { width: 80px; font-family: 'Fraunces', serif; font-size: 16px; color: #c8a94e; text-align: center; border: 1px solid #2a2a3a; background: transparent; }
-        .reset-btn { background: transparent; border: 1px solid #2a2a3a; color: #666; padding: 5px 12px; border-radius: 4px; cursor: pointer; font-family: 'DM Mono', monospace; font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; transition: all 0.15s; }
+        input[type=number].inline { width: 80px; font-family: 'Fraunces', serif; font-size: 16px; color: #c8a94e; text-align: center; border: 1px solid #242424; background: transparent; }
+        .reset-btn { background: transparent; border: 1px solid #242424; color: #666; padding: 5px 12px; border-radius: 4px; cursor: pointer; font-family: 'DM Mono', monospace; font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; transition: all 0.15s; }
         .reset-btn:hover { border-color: #c8a94e; color: #c8a94e; }
-        .sticky-settings { position: sticky; top: 0; z-index: 50; background: #0c0c0f; padding-top: 12px; padding-bottom: 4px; margin-bottom: 16px; border-bottom: 1px solid #1a1a24; }
+        .sticky-settings { position: sticky; top: 0; z-index: 50; background: #000000; padding-top: 12px; padding-bottom: 4px; margin-bottom: 16px; border-bottom: 1px solid #141414; }
         .sticky-settings::before {
           content: ""; position: absolute; left: -32px; right: -32px; top: 0; bottom: 0;
-          background: #0c0c0f; z-index: -1;
+          background: #000000; z-index: -1;
         }
-        .settings-card { background: #12121a; border: 1px solid #1e1e2e; border-radius: 8px; padding: 14px 18px; }
+        .settings-card { background: #000000; border: 1px solid #1a1a1a; border-radius: 8px; padding: 14px 18px; }
       `}</style>
 
       {/* ── HEADER ── */}
-      <div style={{ background: "#0e0e16", borderBottom: "1px solid #1e1e2e", padding: "28px 32px 0" }}>
+      <div style={{ background: "#000000", borderBottom: "1px solid #1a1a1a", padding: "28px 32px 0" }}>
         <div style={{ maxWidth: 860, margin: "0 auto" }}>
           <div style={{ display: "flex", alignItems: "baseline", gap: 14, marginBottom: 6 }}>
             <span className="serif" style={{ fontSize: 26, fontWeight: 700, color: "#c8a94e", letterSpacing: "-0.02em" }}>The Volume Thesis</span>
@@ -809,20 +1035,22 @@ export default function App() {
           <div style={{ display: "flex", gap: 14, alignItems: "center", marginBottom: 16, flexWrap: "wrap" }}>
             <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
               <span style={{ fontSize: 10, color: "#555", letterSpacing: "0.08em", textTransform: "uppercase" }}>Distribution:</span>
-              <span className={`pill ${preset === "blind" ? "active" : "inactive"}`} onClick={() => { setPreset("blind"); setCustomDist(null); }}>Industry average</span>
-              <span className={`pill ${preset === "yc" ? "active" : "inactive"}`} onClick={() => { setPreset("yc"); setCustomDist(null); }}>YC-calibrated (6%)</span>
+              <span className={`pill ${preset === "blind" ? "active" : "inactive"}`} onClick={() => { setPreset("blind"); setCustomDist(null); }}>Industry avg</span>
+              <span className={`pill ${preset === "blend" ? "active" : "inactive"}`} onClick={() => { setPreset("blend"); setCustomDist(null); }}>50/50 Blend</span>
+              <span className={`pill ${preset === "yc" ? "active" : "inactive"}`} onClick={() => { setPreset("yc"); setCustomDist(null); }}>YC-calibrated</span>
+              {savedDist && <span className={`pill ${preset === "custom" ? "active" : "inactive"}`} onClick={() => { setPreset("custom"); setCustomDist(null); }}>My assumptions</span>}
             </div>
           </div>
 
-          <div style={{ display: "flex", gap: 0, borderBottom: "1px solid #1e1e2e", overflowX: "auto" }}>
+          <div style={{ display: "flex", gap: 0, borderBottom: "1px solid #1a1a1a", overflowX: "auto" }}>
             {[
               ["overview",   "Overview"],
               ["headtohead", "Concentrated vs. Distributed"],
-              ["followon",   "Follow-On Strategy"],
+              ["montecarlo", "Monte Carlo"],
               ["irr",        "IRR Translation"],
+              ["followon",   "Follow-On Strategy"],
               ["outlier",    "Horsley Bridge"],
               ["kelly",      "Kelly Criterion"],
-              ["montecarlo", "Monte Carlo"],
               ["why",        "Why This Works"],
               ["inputs",     "Assumptions"],
             ].map(([id, label]) => (
@@ -864,10 +1092,10 @@ export default function App() {
                       <input
                         type="range"
                         min={30}
-                        max={500}
+                        max={1000}
                         step={10}
                         value={distCount}
-                        onChange={e => setDistCount(+e.target.value)}
+                        onChange={e => setPortfolioSize(+e.target.value)}
                         style={{ flex: 1, accentColor: "#4e9e6e" }}
                       />
                       <input
@@ -875,13 +1103,13 @@ export default function App() {
                         className="inline"
                         style={{ width: 60, fontSize: 14, color: "#4e9e6e", borderColor: "#4e9e6e44" }}
                         value={distCount}
-                        onChange={e => setDistCount(Math.min(500, Math.max(30, +e.target.value || 30)))}
+                        onChange={e => setPortfolioSize(+e.target.value || 30)}
                       />
                     </>
                   ) : (
                     <>
-                      <input type="range" min={5} max={500} step={5} value={numInvestments} onChange={e => setNumInvestments(+e.target.value)} style={{ flex: 1 }} />
-                      <input type="number" className="inline" style={{ width: 60, fontSize: 14 }} value={numInvestments} onChange={e => setNumInvestments(Math.min(500, Math.max(5, +e.target.value || 5)))} />
+                      <input type="range" min={5} max={1000} step={5} value={numInvestments} onChange={e => setPortfolioSize(+e.target.value)} style={{ flex: 1, accentColor: "#4e9e6e" }} />
+                      <input type="number" className="inline" step={10} style={{ width: 76, fontSize: 14, paddingRight: 4, color: "#4e9e6e", borderColor: "#4e9e6e44" }} value={numInvestments} onChange={e => setPortfolioSize(+e.target.value || 5)} />
                     </>
                   )}
                 </div>
@@ -901,9 +1129,9 @@ export default function App() {
                           padding: "4px 0",
                           fontSize: 11,
                           fontFamily: "'Fraunces', serif",
-                          border: "1px solid " + (skillPt === p ? "#c8a94e" : "#2a2a3a"),
+                          border: "1px solid " + (skillPt === p ? "#c8a94e" : "#242424"),
                           background: skillPt === p ? "#c8a94e" : "transparent",
-                          color: skillPt === p ? "#0c0c0f" : "#888",
+                          color: skillPt === p ? "#000000" : "#888",
                           borderRadius: 3,
                           cursor: "pointer",
                         }}
@@ -917,10 +1145,12 @@ export default function App() {
               )}
               {tabUsesExitYears && (
                 <div>
-                  <div className="label" style={{ marginBottom: 3, fontSize: 9 }}>Exit horizon</div>
+                  <div className="label" style={{ marginBottom: 3, fontSize: 9 }}>
+                    <Tip text="Proceeds recycled into new investments, as a percentage of committed capital. On a $100M fund, 10% recycling reinvests $10M of early exit proceeds. 20% fully offsets the management fee load; 0% means fees permanently reduce investable capital to 80% of commitments.">Recycling (% of committed)</Tip>
+                  </div>
                   <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                    <input type="range" min={5} max={15} step={1} value={exitYears} onChange={e => setExitYears(+e.target.value)} style={{ flex: 1 }} />
-                    <span className="serif" style={{ fontSize: 14, color: "#c8a94e", minWidth: 40, textAlign: "right" }}>{exitYears}yr</span>
+                    <input type="range" min={0} max={0.20} step={0.05} value={recyclePct} onChange={e => setRecyclePct(+e.target.value)} style={{ flex: 1 }} />
+                    <span className="serif" style={{ fontSize: 14, color: "#c8a94e", minWidth: 40, textAlign: "right" }}>{(recyclePct * 100).toFixed(0)}%</span>
                   </div>
                 </div>
               )}
@@ -928,7 +1158,7 @@ export default function App() {
 
             {/* Reserves: only on tabs where it matters */}
             {tabUsesReserves && (
-              <div style={{ marginTop: 12, paddingTop: 10, borderTop: "1px solid #1e1e2e" }}>
+              <div style={{ marginTop: 12, paddingTop: 10, borderTop: "1px solid #1a1a1a" }}>
                 <div className="label" style={{ marginBottom: 6, fontSize: 9 }}>
                   <Tip text="Capital held back from initial checks for follow-ons. 30–50% is typical. See 'Follow-On Strategy' tab for optimization.">Reserves &amp; follow-on</Tip>
                 </div>
@@ -949,6 +1179,28 @@ export default function App() {
                     <span className="serif" style={{ fontSize: 13, color: "#c8a94e", minWidth: 38 }}>{followOnMult}×</span>
                   </div>
                 </div>
+                {/* v12: live delta vs zero-reserve baseline — makes the effect
+                    of these three sliders visible at a glance */}
+                {currentMC && baselineMC && (() => {
+                  const dMed = currentMC.median - baselineMC.median;
+                  const dP5 = currentMC.p5 - baselineMC.p5;
+                  const dP3 = currentMC.p3 - baselineMC.p3;
+                  const col = v => v > 0.005 ? "#4e9e6e" : v < -0.005 ? "#a33d2a" : "#666";
+                  const sign = v => (v >= 0 ? "+" : "");
+                  return (
+                    <div style={{ marginTop: 8, display: "flex", gap: 18, alignItems: "center", fontSize: 10, color: "#666", flexWrap: "wrap" }}>
+                      <span style={{ letterSpacing: 1, textTransform: "uppercase", fontSize: 8.5 }}>vs 0% reserves:</span>
+                      <span>median <span className="serif" style={{ color: col(dMed), fontSize: 12 }}>{sign(dMed)}{dMed.toFixed(2)}x</span></span>
+                      <span>P(≥3x) <span className="serif" style={{ color: col(dP3), fontSize: 12 }}>{sign(dP3)}{dP3.toFixed(1)}pp</span></span>
+                      <span>P(≥5x) <span className="serif" style={{ color: col(dP5), fontSize: 12 }}>{sign(dP5)}{dP5.toFixed(1)}pp</span></span>
+                      {Math.abs(dMed) < 0.15 && reserveRatio > 0 && (
+                        <span style={{ fontStyle: "italic", color: "#555" }}>
+                          — small delta is real: at a {markupThreshold}x threshold, follow-on dollars earn roughly the same expected multiple as initial checks. Push the threshold up or down to see the tradeoff.
+                        </span>
+                      )}
+                    </div>
+                  );
+                })()}
               </div>
             )}
 
@@ -967,9 +1219,9 @@ export default function App() {
                   color: "#c8a94e"
                 },
                 {
-                  label: <Tip text="Internal Rate of Return net of fees (2% mgmt × 10yr, 20% carry), paced via J-curve distribution model.">Net IRR</Tip>,
+                  label: <Tip text="Net IRR to LPs. Fees (2% × 10yr) reduce investable capital and are returned before carry; 20% carry applies above 1x of committed (European waterfall). Each cohort held 10 years from its capital call.">Net IRR</Tip>,
                   value: `${(eco.netIRR * 100).toFixed(1)}%`,
-                  sub: `J-curve, ${pacing.label} pacing`,
+                  sub: `${DEPLOYMENT_YEARS}-yr deploy, 10-yr hold`,
                   color: eco.netIRR >= 0.2 ? "#4e9e6e" : eco.netIRR >= 0.1 ? "#c8a94e" : "#a33d2a"
                 },
                 {
@@ -1023,11 +1275,11 @@ export default function App() {
             <div className="stat-card" style={{ marginBottom: 16 }}>
               <div className="label" style={{ marginBottom: 10 }}>Expected Value — Which Outcomes Drive the Math?</div>
               <div style={{ fontSize: 12, color: "#888", lineHeight: 1.7, marginBottom: 14 }}>
-                Each outcome tier contributes probability × multiplier to the fund's expected value. The table below shows how much each tier contributes — a useful honesty check. If you think the centicorn rate is too generous, adjust it in the Assumptions tab and watch the thesis numbers shift.
+                Each outcome tier contributes probability × multiplier to the fund's expected value. The table below shows how much each tier contributes — a useful honesty check. If you think the centicorn rate is too generous, adjust it in the Assumptions tab and watch every number in the tool shift.
               </div>
               <table>
                 <thead>
-                  <tr style={{ borderBottom: "1px solid #1e1e2e" }}>
+                  <tr style={{ borderBottom: "1px solid #1a1a1a" }}>
                     <th style={{ textAlign: "left" }}>Outcome</th>
                     <th>Probability</th>
                     <th>Multiple</th>
@@ -1051,7 +1303,7 @@ export default function App() {
                       </tr>
                     );
                   })}
-                  <tr style={{ borderTop: "2px solid #1e1e2e", background: "#0a0a12" }}>
+                  <tr style={{ borderTop: "2px solid #1a1a1a", background: "#0a0a12" }}>
                     <td style={{ textAlign: "left", color: "#e8e0d0", fontSize: 11, fontWeight: 500 }}>Total expected MOIC</td>
                     <td></td>
                     <td></td>
@@ -1073,10 +1325,10 @@ export default function App() {
               </div>
               <table style={{ marginTop: 8 }}>
                 <thead>
-                  <tr style={{ borderBottom: "1px solid #1e1e2e" }}>
+                  <tr style={{ borderBottom: "1px solid #1a1a1a" }}>
                     <th style={{ textAlign: "left" }}>Skill</th>
                     <th style={{ textAlign: "left" }}>Label</th>
-                    <th>Unicorn rate</th>
+                    <th>Unicorn tier ($1–3B)</th>
                     <th>Loss rate</th>
                   </tr>
                 </thead>
@@ -1164,7 +1416,7 @@ export default function App() {
                       ["P(return ≥ 5x)", `${concResult.p5.toFixed(1)}%`],
                       [<Tip text="Volatility of outcomes. Higher = wider swing between best and worst simulated funds.">Std deviation</Tip>, `${concResult.std.toFixed(2)}x`],
                     ].map(([l, v], i) => (
-                      <div key={i} style={{ display: "flex", justifyContent: "space-between", padding: "5px 0", fontSize: 12, borderBottom: "1px solid #12121a" }}>
+                      <div key={i} style={{ display: "flex", justifyContent: "space-between", padding: "5px 0", fontSize: 12, borderBottom: "1px solid #141414" }}>
                         <span style={{ color: "#666" }}>{l}</span>
                         <span className="serif" style={{ color: "#a33d2a" }}>{v}</span>
                       </div>
@@ -1180,7 +1432,7 @@ export default function App() {
                       ["P(return ≥ 5x)", `${distResult.p5.toFixed(1)}%`],
                       [<Tip text="Volatility of outcomes. Higher = wider swing between best and worst simulated funds.">Std deviation</Tip>, `${distResult.std.toFixed(2)}x`],
                     ].map(([l, v], i) => (
-                      <div key={i} style={{ display: "flex", justifyContent: "space-between", padding: "5px 0", fontSize: 12, borderBottom: "1px solid #12121a" }}>
+                      <div key={i} style={{ display: "flex", justifyContent: "space-between", padding: "5px 0", fontSize: 12, borderBottom: "1px solid #141414" }}>
                         <span style={{ color: "#666" }}>{l}</span>
                         <span className="serif" style={{ color: "#4e9e6e" }}>{v}</span>
                       </div>
@@ -1231,8 +1483,8 @@ export default function App() {
                     <Tip text="Fraction of fund held back from initial checks. Real funds reserve 30–60%. Reserves can only be deployed into companies that show traction (the threshold below).">Reserve ratio</Tip>
                   </div>
                   <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                    <input type="range" min={0} max={0.7} step={0.05} value={foReserves} onChange={e => setFoReserves(+e.target.value)} style={{ flex: 1 }} />
-                    <span className="serif" style={{ fontSize: 16, color: "#c8a94e", minWidth: 50 }}>{(foReserves * 100).toFixed(0)}%</span>
+                    <input type="range" min={0} max={0.7} step={0.05} value={reserveRatio} onChange={e => setReserveRatio(+e.target.value)} style={{ flex: 1 }} />
+                    <span className="serif" style={{ fontSize: 16, color: "#c8a94e", minWidth: 50 }}>{(reserveRatio * 100).toFixed(0)}%</span>
                   </div>
                   <div className="help-bar">e.g. 40% = $4M of a $10M fund held for follow-ons</div>
                 </div>
@@ -1277,7 +1529,7 @@ export default function App() {
                   ))}
                 </div>
                 <div style={{ fontSize: 11, color: "#666", lineHeight: 1.7 }}>
-                  At {numInvestments} positions with <span style={{ color: "#c8a94e" }}>{(foReserves * 100).toFixed(0)}% reserves</span>, follow-on at <span style={{ color: "#c8a94e" }}>{foThreshold}× mark-up</span>, <span style={{ color: "#c8a94e" }}>{foMult}× check</span>. Compare against the optimal sweep below.
+                  At {numInvestments} positions with <span style={{ color: "#c8a94e" }}>{(reserveRatio * 100).toFixed(0)}% reserves</span>, follow-on at <span style={{ color: "#c8a94e" }}>{foThreshold}× mark-up</span>, <span style={{ color: "#c8a94e" }}>{foMult}× check</span>. Compare against the optimal sweep below.
                 </div>
               </div>
             )}
@@ -1356,10 +1608,10 @@ export default function App() {
             <div className="stat-card" style={{ marginBottom: 16 }}>
               <div className="label" style={{ marginBottom: 10 }}>MOIC → IRR via J-Curve Distribution Pacing</div>
               <div style={{ fontSize: 12, color: "#888", lineHeight: 1.7 }}>
-                Real fund IRRs aren't <span style={{ color: "#e8e0d0" }}>MOIC^(1/years)</span> — that formula assumes a single bullet payment at exit. Distributions actually pace out across years 5–13, which produces meaningfully higher IRRs because earlier distributions compound. We use Cambridge Associates seed-vintage pacing curves.
+                Fund IRR follows directly from cashflow timing. The model calls committed capital evenly over the {DEPLOYMENT_YEARS}-year deployment and holds each cohort for a standardized 10 years — anchored to Crunchbase data (SaaS companies take a median 9 years from founding to exit) and SaaStr's analysis of $1B+ SaaS acquisitions (10.0-year median from funding). The rule-of-72 sanity check holds: a dollar that triples over 10 years earns ~11.6% — so a 3x-gross fund shows a ~11.6% gross IRR, and net IRR lands below that after the fee drag on invested capital and 20% carry.
               </div>
               <div style={{ marginTop: 12, padding: "8px 12px", background: "#0a0a12", borderRadius: 4, fontSize: 11, color: "#888" }}>
-                Live: <span style={{ color: "#c8a94e" }}>{numInvestments} positions</span>, gross MOIC of <span style={{ color: "#c8a94e" }}>{medianMOIC.toFixed(2)}x</span>, paced as <span style={{ color: "#c8a94e" }}>{pacing.label}</span>.
+                Live: <span style={{ color: "#c8a94e" }}>{numInvestments} positions</span>, gross MOIC of <span style={{ color: "#c8a94e" }}>{medianMOIC.toFixed(2)}x</span>, {DEPLOYMENT_YEARS}-year deployment, 10-year hold per investment.
               </div>
             </div>
 
@@ -1378,7 +1630,7 @@ export default function App() {
                 </div>
               </div>
               <div className="stat-card" style={{ textAlign: "center" }}>
-                <div className="label">Net (after 2/20)</div>
+                <div className="label">Net (after carry)</div>
                 <div style={{ display: "flex", justifyContent: "space-around", marginTop: 10 }}>
                   <div>
                     <div style={{ fontSize: 10, color: "#555", marginBottom: 3 }}>MOIC</div>
@@ -1392,57 +1644,18 @@ export default function App() {
               </div>
             </div>
 
-            {/* Progressive disclosure: pacing details */}
             <div className="stat-card" style={{ marginBottom: 16 }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                <div className="label" style={{ marginBottom: 0 }}>Distribution Pacing Model</div>
-                <span
-                  style={{ fontSize: 11, color: "#666", cursor: "pointer", padding: "6px 10px", border: "1px solid #1e1e2e", borderRadius: 4, userSelect: "none" }}
-                  onClick={() => setShowPacingDetails(v => !v)}
-                >
-                  {showPacingDetails ? "▼ Hide" : "▶ Show details & adjust"}
-                </span>
+              <div className="label" style={{ marginBottom: 10 }}>Cashflow Timing Model</div>
+              <div style={{ fontSize: 12, color: "#888", lineHeight: 1.8 }}>
+                Capital calls: <span style={{ color: "#e8e0d0" }}>1/{DEPLOYMENT_YEARS} of commitments per year</span> across the deployment period. Each year's cohort exits <span style={{ color: "#e8e0d0" }}>10 years after its call</span>, so distributions arrive in years 10–{DEPLOYMENT_YEARS + 9}. The waterfall pays LPs 100% of distributions until their full commitment is returned, then splits 80/20. Fees never subtract from returns directly — they reduce how much of the fund is invested (80% of commitments before recycling), which is where the gross-to-net gap comes from. Sources for the 10-year hold are linked in the footer.
               </div>
-              <div style={{ marginTop: 10, fontSize: 12, color: "#888" }}>
-                Currently: <span style={{ color: "#c8a94e" }}>{pacing.label}</span> pacing — typical for seed-stage funds with 8–12 year exit horizons.
-              </div>
-
-              {showPacingDetails && (
-                <div style={{ marginTop: 12, padding: 14, background: "#0a0a12", border: "1px solid #1e1e2e", borderRadius: 6 }}>
-                  <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
-                    {Object.entries(PACING_PRESETS).map(([key, p]) => (
-                      <span key={key} className={`pill ${pacingPreset === key ? "active" : "inactive"}`} onClick={() => setPacingPreset(key)}>
-                        {p.label}
-                      </span>
-                    ))}
-                  </div>
-                  <div className="label" style={{ marginBottom: 8 }}>Cumulative distribution by year</div>
-                  <table style={{ marginBottom: 14 }}>
-                    <thead>
-                      <tr style={{ borderBottom: "1px solid #1e1e2e" }}>
-                        <th style={{ textAlign: "left" }}>Year</th>
-                        {pacing.years.map(y => <th key={y}>{y}</th>)}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      <tr>
-                        <td style={{ textAlign: "left", color: "#888" }}>Cumulative %</td>
-                        {pacing.cum.map((c, i) => <td key={i} className="serif" style={{ color: "#c8a94e" }}>{(c * 100).toFixed(0)}%</td>)}
-                      </tr>
-                    </tbody>
-                  </table>
-                  <div style={{ fontSize: 11, color: "#666", lineHeight: 1.7 }}>
-                    The pacing curve determines how much of the gross MOIC comes back as cash in each year. Earlier distributions compound at a higher effective rate, which is why a 3× MOIC paced over 8 years produces ~14% net IRR, while the same 3× as a single year-10 bullet produces only ~7.2%. Switch to "Series A" for faster realization or "Growth" for the fastest J-curve.
-                  </div>
-                </div>
-              )}
             </div>
 
             <div className="stat-card">
-              <div className="label" style={{ marginBottom: 12 }}>MOIC → Net IRR Reference (with seed pacing)</div>
+              <div className="label" style={{ marginBottom: 12 }}>MOIC → Net IRR Reference (10-yr hold)</div>
               <table>
                 <thead>
-                  <tr style={{ borderBottom: "1px solid #1e1e2e" }}>
+                  <tr style={{ borderBottom: "1px solid #1a1a1a" }}>
                     <th style={{ textAlign: "left" }}>Gross MOIC</th>
                     <th>Net MOIC</th>
                     <th>Gross IRR</th>
@@ -1459,7 +1672,7 @@ export default function App() {
                     { moic: 10, verdict: "Top-decile fund",           color: "#3a7abf" },
                     { moic: 20, verdict: "Legendary vintage",         color: "#7c5cbf" },
                   ].map(r => {
-                    const e = fundEconomics(r.moic, pacing);
+                    const e = fundEconomics(r.moic, recyclePct);
                     return (
                       <tr key={r.moic}>
                         <td style={{ textAlign: "left", color: "#e8e0d0" }} className="serif">{r.moic}x</td>
@@ -1473,7 +1686,7 @@ export default function App() {
                 </tbody>
               </table>
               <div style={{ marginTop: 12, fontSize: 10, color: "#444", lineHeight: 1.6 }}>
-                With realistic distribution pacing, a 3× gross MOIC produces ~14% net IRR — meaningfully better than the naive single-exit formula but still below LP target thresholds of 20%+. Top-quartile VC vintages return 15–27% net IRR.
+                With the corrected fee model (fees reduce investable capital to 80% of commitments; carry above 1x of committed), a 3× gross MOIC produces roughly 9–12% net IRR depending on exit horizon. A 5× gross fund lands near 16–21%. Top-quartile VC vintages return 15–27% net IRR — which is why the gross bar for a genuinely good fund is higher than most pitch decks admit.
               </div>
             </div>
           </div>
@@ -1496,7 +1709,7 @@ export default function App() {
               <div className="label" style={{ marginBottom: 14 }}>Probability of ≥1 Outlier by Skill Tier</div>
               <OutlierChart curves={outlierCurves} currentN={numInvestments} />
               <div style={{ marginTop: 10, fontSize: 11, color: "#666", lineHeight: 1.7 }}>
-                Even a superstar VC needs <span style={{ color: "#4e9e6e" }}>~40 investments</span> for a 95%+ chance of at least one outlier. An average VC needs <span style={{ color: "#a33d2a" }}>~150</span> — exactly the number a standard 3-year deployment produces at a Kelly-optimal cadence.
+                Even a superstar VC needs <span style={{ color: "#4e9e6e" }}>~40 investments</span> for a 95%+ chance of at least one outlier. An average VC needs <span style={{ color: "#a33d2a" }}>~150</span> — roughly the number a standard 4-year deployment produces at a Kelly-optimal cadence.
               </div>
             </div>
 
@@ -1504,14 +1717,14 @@ export default function App() {
               <div className="label" style={{ marginBottom: 12 }}>P(≥1 Outlier) at Your Distribution</div>
               <table>
                 <thead>
-                  <tr style={{ borderBottom: "1px solid #1e1e2e" }}>
+                  <tr style={{ borderBottom: "1px solid #1a1a1a" }}>
                     {["Total Positions", "P(≥1 Unicorn)", "P(≥1 Decacorn)", "P(≥1 Centicorn)", "Per Year"].map(h => <th key={h}>{h}</th>)}
                   </tr>
                 </thead>
                 <tbody>
                   {[10, 25, 50, 100, 150, 200, 300, 500].map(n => {
-                    const pu = probAtLeastOne(nd, n, 50);
-                    const pd = probAtLeastOne(nd, n, 500);
+                    const pu = probAtLeastOne(nd, n, 55);
+                    const pd = probAtLeastOne(nd, n, 400);
                     const pc = probAtLeastOne(nd, n, 5000);
                     return (
                       <tr key={n} style={{ background: n === numInvestments ? "#15151f" : "transparent" }}>
@@ -1535,11 +1748,46 @@ export default function App() {
             <div className="stat-card" style={{ marginBottom: 16 }}>
               <div className="label" style={{ marginBottom: 10 }}>The Kelly Criterion — An Intuition Pump</div>
               <div style={{ fontSize: 13, color: "#888", lineHeight: 1.8 }}>
-                Kelly (Bell Labs, 1956) answers the question: <em style={{ color: "#e8e0d0" }}>given a bet with positive expected value, what fraction of your bankroll should you wager to maximize long-run growth?</em> The formula is elegant, but applying it directly to venture capital produces answers that are mathematically correct and practically unusable.
+                Kelly (Bell Labs, 1956) answers the question: <em style={{ color: "#e8e0d0" }}>given a bet with positive expected value, what fraction of your bankroll should you wager to maximize long-run growth?</em> The formula is elegant, but the binary version (one win probability, one payout) breaks on venture's multi-outcome distribution. The proper generalization — maximizing expected log growth over the full distribution (Thorp 2006; MacLean, Thorp &amp; Ziemba 2011) — is computed live below from the current assumptions.
               </div>
               <div style={{ marginTop: 12, padding: "10px 14px", background: "#1a0e0e22", border: "1px solid #6b1a1a44", borderRadius: 4, fontSize: 11, color: "#c4783a", lineHeight: 1.6 }}>
-                <strong>Honest caveat:</strong> "Full Kelly" for a 2%-probability 50× bet recommends a bet size so small it would require thousands of positions. This doesn't mean Kelly is wrong — it means venture's risk/reward is extreme enough that pure Kelly isn't directly operational. We use it here as an <em>intuition pump</em>, not as a precise prescription.
+                <strong>Reading the per-tier table below:</strong> applied to any single outcome tier in isolation, Kelly says "no edge" — the downside (everything else in the distribution) swamps any one tier's upside. That is a limitation of single-outcome Kelly, not evidence against investing. The correct treatment is the full-distribution Kelly above, which bets on the whole outcome mix at once.
               </div>
+            </div>
+
+            <div className="stat-card" style={{ marginBottom: 16, border: "1px solid #3a3520" }}>
+              <div className="label" style={{ marginBottom: 10 }}>Full-Distribution Kelly — Computed From Current Assumptions</div>
+              {(() => {
+                const k = fullDistributionKelly(nd);
+                const posFull = k.f > 0.0005 ? Math.round(1 / k.f) : Infinity;
+                const posHalf = k.f > 0.0005 ? Math.round(2 / k.f) : Infinity;
+                const posQuarter = k.f > 0.0005 ? Math.round(4 / k.f) : Infinity;
+                return (
+                  <div>
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 10, marginBottom: 12 }}>
+                      <div style={{ textAlign: "center" }}>
+                        <div style={{ fontSize: 10, color: "#555", marginBottom: 3 }}>Optimal bet f*</div>
+                        <div className="serif" style={{ fontSize: 22, color: "#c8a94e" }}>{(k.f * 100).toFixed(1)}%</div>
+                      </div>
+                      <div style={{ textAlign: "center" }}>
+                        <div style={{ fontSize: 10, color: "#555", marginBottom: 3 }}>Full Kelly</div>
+                        <div className="serif" style={{ fontSize: 22, color: "#e8e0d0" }}>{posFull === Infinity ? "—" : posFull} <span style={{ fontSize: 11, color: "#666" }}>positions</span></div>
+                      </div>
+                      <div style={{ textAlign: "center" }}>
+                        <div style={{ fontSize: 10, color: "#555", marginBottom: 3 }}>Half Kelly</div>
+                        <div className="serif" style={{ fontSize: 22, color: "#e8e0d0" }}>{posHalf === Infinity ? "—" : posHalf} <span style={{ fontSize: 11, color: "#666" }}>positions</span></div>
+                      </div>
+                      <div style={{ textAlign: "center" }}>
+                        <div style={{ fontSize: 10, color: "#555", marginBottom: 3 }}>Quarter Kelly</div>
+                        <div className="serif" style={{ fontSize: 22, color: "#e8e0d0" }}>{posQuarter === Infinity ? "—" : posQuarter} <span style={{ fontSize: 11, color: "#666" }}>positions</span></div>
+                      </div>
+                    </div>
+                    <div style={{ fontSize: 11.5, color: "#888", lineHeight: 1.7 }}>
+                      Full Kelly assumes the probabilities are exactly right and that winnings can be re-bet — neither holds in venture, where probabilities are estimates and capital locks up for a decade. Practitioners run fractional Kelly to compensate for estimation error (Thorp's recommendation). Quarter Kelly on the current distribution implies roughly <span className="serif" style={{ color: "#c8a94e" }}>{posQuarter === Infinity ? "—" : posQuarter}</span> equal positions. Note what Kelly cannot see: illiquidity, deal-flow constraints, follow-on strategy, and the one-shot nature of a fund. The Monte Carlo tab handles those; this card is the cleanest answer to "what does betting theory say about position sizing on this distribution."
+                    </div>
+                  </div>
+                );
+              })()}
             </div>
 
             <div className="formula-card">
@@ -1565,10 +1813,10 @@ export default function App() {
             <div className="stat-card" style={{ marginBottom: 16 }}>
               <div className="label" style={{ marginBottom: 10 }}>Why "Full Kelly" Is Impractical in Venture</div>
               <div style={{ fontSize: 12, color: "#888", lineHeight: 1.7, marginBottom: 12 }}>
-                Consider a unicorn (50× outcome) at 2% probability. Full Kelly says:
+                Consider a unicorn-tier outcome (55× post-dilution) at a 2% cumulative $1B+ hit rate. Full Kelly says:
               </div>
               <div style={{ padding: "12px 14px", background: "#0a0a12", borderRadius: 4, fontFamily: "'Fraunces', serif", fontSize: 13, color: "#c8a94e", lineHeight: 1.9 }}>
-                f* = 0.02 − (0.98 / 49) = 0.02 − 0.020 ≈ 0.00% (slightly negative rounding to zero)
+                f* = 0.02 − (0.98 / 54) = 0.02 − 0.018 = +0.2% per bet → ~540 positions at full Kelly
               </div>
               <div style={{ fontSize: 12, color: "#888", lineHeight: 1.7, marginTop: 12 }}>
                 Full Kelly says <em>don't bet at all</em> on this outcome — the upside isn't large enough relative to the downside. But this ignores that venture funds bet on <em>distributions</em>, not single outcomes. The expected value across the whole distribution is materially positive. Kelly applied to a single tier undervalues the compound effect of the outcome mix.
@@ -1587,7 +1835,11 @@ export default function App() {
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 16 }}>
               {nd.filter(d => d.multiplier > 1).map(d => {
                 const b = d.multiplier - 1;
-                const f = Math.max(0, d.prob - (1 - d.prob) / b);
+                // Cumulative "this outcome or better" — the meaningful
+                // single-bet framing. Exclusive per-tier probabilities make
+                // every tier look edge-less, which misreads the bet.
+                const pCum = nd.filter(x => x.multiplier >= d.multiplier).reduce((s, x) => s + x.prob, 0);
+                const f = Math.max(0, pCum - (1 - pCum) / b);
                 const halfF = f / 2;
                 const nTotal = f > 0 ? Math.round(1 / f) : null;
                 const halfN = halfF > 0 ? Math.round(1 / halfF) : null;
@@ -1600,8 +1852,8 @@ export default function App() {
                     </div>
                     <div style={{ display: "flex", gap: 16, marginBottom: 10 }}>
                       <div>
-                        <div style={{ fontSize: 9, color: "#555" }}>p</div>
-                        <div className="serif" style={{ fontSize: 14, color: "#888" }}>{fmtPct(d.prob)}</div>
+                        <div style={{ fontSize: 9, color: "#555" }}>p (≥ this)</div>
+                        <div className="serif" style={{ fontSize: 14, color: "#888" }}>{fmtPct(nd.filter(x => x.multiplier >= d.multiplier).reduce((s, x) => s + x.prob, 0))}</div>
                       </div>
                       <div>
                         <div style={{ fontSize: 9, color: "#555" }}>b</div>
@@ -1646,16 +1898,16 @@ export default function App() {
         {activeTab === "montecarlo" && (
           <div className="fade-in">
             <div className="stat-card" style={{ marginBottom: 16 }}>
-              <div className="label" style={{ marginBottom: 8 }}>Monte Carlo · 20 → 500 Positions</div>
+              <div className="label" style={{ marginBottom: 8 }}>Monte Carlo · 20 → 1,000 Positions</div>
               <div style={{ fontSize: 12, color: "#888", lineHeight: 1.7 }}>
                 Choose a precision level below. The <strong style={{ color: "#c8a94e" }}>gold marker</strong> on each chart tracks your current portfolio size. Small-n sims automatically run with extra iterations since rare outcomes create more variance at small portfolio sizes.
               </div>
             </div>
 
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px 14px", background: "#0a0a12", border: "1px solid #1e1e2e", borderRadius: 6, marginBottom: 12, fontSize: 11, color: "#888", gap: 16, flexWrap: "wrap" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px 14px", background: "#0a0a12", border: "1px solid #1a1a1a", borderRadius: 6, marginBottom: 12, fontSize: 11, color: "#888", gap: 16, flexWrap: "wrap" }}>
               <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
                 <span style={{ color: "#555", letterSpacing: "0.08em", textTransform: "uppercase", fontSize: 9 }}>Precision</span>
-                {mcRunning && <span style={{ color: "#c8a94e" }}>· running…</span>}
+                {mcRunning && <span style={{ color: "#c8a94e" }}>· computing {mcProgress}%…</span>}
               </div>
               <div style={{ display: "flex", gap: 6, flex: 1, justifyContent: "flex-end" }}>
                 {[
@@ -1671,8 +1923,8 @@ export default function App() {
                       onClick={() => runCurves(opt.sims)}
                       style={{
                         background: active ? "#c8a94e" : "transparent",
-                        border: "1px solid " + (active ? "#c8a94e" : "#2a2a3a"),
-                        color: active ? "#0c0c0f" : "#888",
+                        border: "1px solid " + (active ? "#c8a94e" : "#242424"),
+                        color: active ? "#000000" : "#888",
                         padding: "5px 12px",
                         borderRadius: 4,
                         cursor: mcRunning ? "wait" : "pointer",
@@ -1703,6 +1955,13 @@ export default function App() {
                   ↔ click or drag on any chart to set portfolio size
                 </div>
                 <div className="stat-card" style={{ marginBottom: 10 }}>
+                  <div className="label" style={{ marginBottom: 12 }}>Outcome Bands — where 80% of simulated funds land</div>
+                  <div style={{ fontSize: 11, color: "#888", lineHeight: 1.6, marginBottom: 10 }}>
+                    Shaded bands show the 10th–90th (light) and 25th–75th (dark) percentile range of fund outcomes; the solid line is the median. The funnel narrowing to the right is the consistency argument in one picture: more positions squeeze the range of likely outcomes toward the distribution's expected multiple of <span className="serif" style={{ color: "#c8a94e" }}>{em.toFixed(2)}x</span> — the bottom of the band rises, and the top compresses.
+                  </div>
+                  {mcCurves.q10s && <BandChart sizes={mcCurves.sizes} med={mcCurves.meds} q10={mcCurves.q10s} q25={mcCurves.q25s} q75={mcCurves.q75s} q90={mcCurves.q90s} currentN={numInvestments} onSelectN={setNumInvestments} />}
+                </div>
+                <div className="stat-card" style={{ marginBottom: 10 }}>
                   <div className="label" style={{ marginBottom: 12 }}>Failure Rate — P(return &lt; 1x)</div>
                   <CurveChart sizes={mcCurves.sizes} values={mcCurves.fails} color="#e24b4a" currentN={numInvestments} yFmt={v => v.toFixed(0) + "%"} onSelectN={setNumInvestments} />
                 </div>
@@ -1712,10 +1971,20 @@ export default function App() {
                 </div>
                 <div className="stat-card" style={{ marginBottom: 10 }}>
                   <div className="label" style={{ marginBottom: 12 }}>P(return ≥ 5x) — top-quartile target</div>
+                  {em < 5 && (
+                    <div style={{ fontSize: 10.5, color: "#8a7433", lineHeight: 1.6, marginBottom: 8 }}>
+                      Note: the current distribution's expected multiple is {em.toFixed(2)}x — below the 5x target. When the target exceeds the expected multiple, this curve mathematically must peak and then decline: diversification converges every fund toward the mean, and the mean is below the target. Raising deal quality (preset or skill) is the only way to move the mean itself.
+                    </div>
+                  )}
                   <CurveChart sizes={mcCurves.sizes} values={mcCurves.p5s} color="#3a7abf" currentN={numInvestments} yFmt={v => v.toFixed(0) + "%"} onSelectN={setNumInvestments} />
                 </div>
                 <div className="stat-card" style={{ marginBottom: 10 }}>
                   <div className="label" style={{ marginBottom: 12 }}>P(return ≥ 10x) — top-decile fund outcome</div>
+                  <div style={{ fontSize: 10.5, color: "#8a7433", lineHeight: 1.6, marginBottom: 8 }}>
+                    {em >= 10
+                      ? "The current expected multiple exceeds 10x, so this probability rises with portfolio size."
+                      : `A 10x fund requires beating the distribution's expected multiple of ${em.toFixed(2)}x. Diversification trades this moonshot probability away in exchange for consistency — the honest cost of a volume strategy. Concentrated funds keep more 10x+ probability and accept far more downside in exchange.`}
+                  </div>
                   <CurveChart sizes={mcCurves.sizes} values={mcCurves.p10s} color="#7c5cbf" currentN={numInvestments} yFmt={v => v.toFixed(0) + "%"} onSelectN={setNumInvestments} />
                 </div>
                 <div className="stat-card" style={{ marginBottom: 10 }}>
@@ -1757,7 +2026,7 @@ export default function App() {
               </div>
               <table>
                 <thead>
-                  <tr style={{ borderBottom: "1px solid #1e1e2e" }}>
+                  <tr style={{ borderBottom: "1px solid #1a1a1a" }}>
                     <th style={{ textAlign: "left" }}>Firm</th>
                     <th style={{ textAlign: "left" }}>Strategy</th>
                     <th style={{ textAlign: "left" }}>Outcome</th>
@@ -1788,7 +2057,7 @@ export default function App() {
             <div className="stat-card" style={{ marginBottom: 16 }}>
               <div className="label" style={{ marginBottom: 10 }}>3. The Binding Constraint Is Deal Flow, Not Capital</div>
               <div style={{ fontSize: 13, color: "#888", lineHeight: 1.8 }}>
-                Here's what the tool's math can't show you: a 150-position portfolio requires <em>access to 150 investable companies per 3-year window</em>. Most seed funds can't reach that threshold at quality — their deal flow simply runs out. This is why most concentrated funds aren't concentrated by strategic choice; they're concentrated by <span style={{ color: "#e8e0d0" }}>necessity</span>.
+                Here's what the tool's math can't show you: a 150-position portfolio requires <em>access to 150 investable companies per 4-year window</em>. Most seed funds can't reach that threshold at quality — their deal flow simply runs out. This is why most concentrated funds aren't concentrated by strategic choice; they're concentrated by <span style={{ color: "#e8e0d0" }}>necessity</span>.
                 <br /><br />
                 YC produces <strong style={{ color: "#c8a94e" }}>roughly 800 pre-vetted companies per year</strong> (4 batches × ~200 companies). For a fund with structural access to that deal flow, a Kelly-scale portfolio becomes operationally reachable. The math in this tool describes what <em>becomes possible</em> when deal flow stops being the binding constraint. For funds without that access, Kelly-scale portfolios aren't a choice — they're unreachable.
               </div>
@@ -1812,7 +2081,7 @@ export default function App() {
             <div className="stat-card">
               <div className="label" style={{ marginBottom: 10 }}>The Honest Positioning</div>
               <div style={{ fontSize: 13, color: "#888", lineHeight: 1.85 }}>
-                This tool is a <span style={{ color: "#e8e0d0" }}>model of what's mathematically achievable</span> under a set of stated assumptions, framed around a deal-flow-unconstrained scenario. It's a defense of Team Ignite's portfolio construction choices, not a replacement for due diligence on our actual track record, deal flow, team, and fund economics.
+                This tool is a <span style={{ color: "#e8e0d0" }}>model of what's mathematically achievable</span> under a set of stated, editable assumptions. It models portfolio construction only. It does not evaluate any specific fund's deal flow, selection ability, track record, or economics — those require independent due diligence.
                 <br /><br />
                 If the math is right and the deal-flow access is real, Team Ignite's strategy should outperform traditional concentrated seed funds on a risk-adjusted basis. If either assumption fails, the strategy reduces to expensive beta exposure to an asset class LPs can access more cheaply through fund-of-funds. We believe the first case holds. This tool helps you evaluate whether you agree.
               </div>
@@ -1827,18 +2096,61 @@ export default function App() {
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
                 <div className="label" style={{ marginBottom: 0 }}>Edit Outcome Distribution</div>
                 <div style={{ display: "flex", gap: 8 }}>
-                  <span className={`pill ${preset === "blind" ? "active" : "inactive"}`} onClick={() => { setPreset("blind"); setCustomDist(null); }}>Industry average</span>
+                  <span className={`pill ${preset === "blind" ? "active" : "inactive"}`} onClick={() => { setPreset("blind"); setCustomDist(null); }}>Industry avg</span>
+                  <span className={`pill ${preset === "blend" ? "active" : "inactive"}`} onClick={() => { setPreset("blend"); setCustomDist(null); }}>50/50 Blend</span>
                   <span className={`pill ${preset === "yc" ? "active" : "inactive"}`} onClick={() => { setPreset("yc"); setCustomDist(null); }}>YC historical</span>
+                  {savedDist && <span className={`pill ${preset === "custom" ? "active" : "inactive"}`} onClick={() => { setPreset("custom"); setCustomDist(null); }}>My assumptions</span>}
+                  {customDist && (
+                    <span className="pill inactive" style={{ borderColor: "#3a3520", color: "#c8a94e" }}
+                      onClick={() => { setSavedDist(customDist); setPreset("custom"); setCustomDist(null); }}>
+                      ✓ Save as my assumptions
+                    </span>
+                  )}
+                </div>
+                <div className="stat-card" style={{ marginTop: 14 }}>
+                  <div className="label" style={{ marginBottom: 8 }}>
+                    <Tip text="Each tier's return multiple = (exit value ÷ entry post-money) × effective retention. Retention captures cumulative dilution from later rounds (Carta medians: ~19% at A, ~15% at B, ~11% at C, ~9% at D) plus, for the deepest tiers, a realization discount between peak marks and realized proceeds. Move a slider to see the tier's multiple change everywhere in the tool.">Dilution &amp; Entry Assumptions</Tip>
+                  </div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
+                    <span style={{ fontSize: 11, color: "#888" }}>Blended entry post-money</span>
+                    <input type="number" className="inline" step={1} style={{ width: 64, fontSize: 13 }} value={entryVal}
+                      onChange={e => setEntryVal(Math.min(60, Math.max(3, +e.target.value || 15)))} />
+                    <span style={{ fontSize: 11, color: "#666" }}>$M (Carta 2025 medians: $10M pre-seed caps, $20M seed post)</span>
+                  </div>
+                  {(customDist || baseDist).map((d, i) => {
+                    if (!EXIT_MIDS[i]) return null;
+                    const raw = EXIT_MIDS[i] / entryVal;
+                    const retention = Math.min(1, d.multiplier / raw);
+                    const setRetention = (r) => {
+                      const src2 = customDist || baseDist;
+                      const next = src2.map((x, j) => j === i ? { ...x, multiplier: Math.max(1, Math.round(raw * r)) } : { ...x });
+                      setCustomDist(next);
+                    };
+                    return (
+                      <div key={i} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                        <span style={{ fontSize: 14, flexShrink: 0 }}>{d.emoji}</span>
+                        <span style={{ fontSize: 10.5, color: "#888", width: 168, flexShrink: 0 }}>{d.label.replace(/ \(\d+x\)$/, "")}</span>
+                        <input type="range" min={0.1} max={1} step={0.01} value={retention}
+                          onChange={e => setRetention(+e.target.value)} style={{ flex: 1 }} />
+                        <span className="serif" style={{ fontSize: 11.5, color: "#c8a94e", width: 148, textAlign: "right", flexShrink: 0 }}>
+                          {(retention * 100).toFixed(0)}% of raw {raw >= 100 ? Math.round(raw).toLocaleString() : raw.toFixed(1)}x → {d.multiplier.toLocaleString()}x
+                        </span>
+                      </div>
+                    );
+                  })}
+                  <div style={{ fontSize: 10, color: "#555", marginTop: 8, lineHeight: 1.6 }}>
+                    Defaults imply ~90% retention on early exits declining to ~47% at unicorn, ~40% at decacorn, and 20–30% at the deepest tiers, where an additional realization discount (peak private marks vs realized proceeds) is applied on top of pure dilution. Sources linked in the footer.
+                  </div>
                 </div>
               </div>
               <div style={{ fontSize: 11, color: "#666", marginBottom: 14, lineHeight: 1.6 }}>
-                Currently showing: <span style={{ color: "#c8a94e" }}>{preset === "yc" ? "YC-calibrated per Garry Tan (6% unicorn rate)" : "Industry average per Carta 2018 + Correlation Ventures (2% unicorn rate)"}</span>.
+                Currently showing: <span style={{ color: "#c8a94e" }}>{preset === "yc" ? "YC-calibrated (≈6% cumulative unicorn rate, per Garry Tan and PitchBook)" : preset === "blend" ? "50/50 blend of YC-calibrated and industry average (≈4% cumulative unicorn rate)" : "Industry average (≈2% cumulative unicorn rate, per Correlation Ventures, Carta, and Horsley Bridge)"}</span>. Multiples assume a ~$15M blended pre-seed/seed entry (Carta 2025 medians) net of dilution.
               </div>
               {(customDist || baseDist).map((d, i) => (
                 <div key={i} className="dist-row">
                   <span style={{ fontSize: 15, width: 20 }}>{d.emoji}</span>
                   <span style={{ fontSize: 11, color: "#aaa", width: 160, flexShrink: 0 }}>{d.label}</span>
-                  <input type="range" min={0} max={0.9} step={0.005} value={d.prob}
+                  <input type="range" min={0} max={d.multiplier >= 400 ? 0.02 : d.multiplier >= 150 ? 0.05 : d.multiplier >= 55 ? 0.15 : d.multiplier >= 15 ? 0.4 : 0.9} step={d.multiplier >= 400 ? 0.0001 : d.multiplier >= 150 ? 0.0005 : d.multiplier >= 55 ? 0.001 : 0.005} value={d.prob}
                     onChange={e => {
                       const nd2 = [...(customDist || baseDist)];
                       nd2[i] = { ...d, prob: parseFloat(e.target.value) };
@@ -1846,14 +2158,14 @@ export default function App() {
                     }}
                     style={{ width: 120 }}
                   />
-                  <span style={{ fontSize: 12, color: d.color, width: 50, textAlign: "right", flexShrink: 0 }}>
+                  <span style={{ fontSize: 12, color: d.color, width: 62, textAlign: "right", flexShrink: 0 }}>
                     {fmtPct(normalize(customDist || baseDist)[i].prob)}
                   </span>
                 </div>
               ))}
               {customDist && (
                 <button onClick={() => setCustomDist(null)}
-                  style={{ marginTop: 16, background: "#1a1a24", border: "1px solid #2a2a3a", color: "#888", padding: "7px 14px", borderRadius: 4, cursor: "pointer", fontFamily: "'DM Mono', monospace", fontSize: 11, letterSpacing: "0.05em" }}>
+                  style={{ marginTop: 16, background: "#141414", border: "1px solid #242424", color: "#888", padding: "7px 14px", borderRadius: 4, cursor: "pointer", fontFamily: "'DM Mono', monospace", fontSize: 11, letterSpacing: "0.05em" }}>
                   Reset to preset
                 </button>
               )}
@@ -1863,14 +2175,14 @@ export default function App() {
               {[
                 ["Median MOIC (Monte Carlo)",        currentMC ? `${currentMC.median.toFixed(2)}x` : "…"],
                 ["Mean MOIC (Monte Carlo)",          currentMC ? `${currentMC.mean.toFixed(2)}x` : "…"],
-                ["Net MOIC (after 2/20)",            `${netMOIC_val.toFixed(2)}x`],
-                [`Net IRR @ ${exitYears}yr`,         `${(netIRR * 100).toFixed(1)}%`],
+                ["Net MOIC (after carry)",           `${netMOIC_val.toFixed(2)}x`],
+                ["Net IRR (10-yr hold)",             `${(netIRR * 100).toFixed(1)}%`],
                 ["P(≥1 Unicorn)",                    fmtPct(pUnicorn)],
                 ["P(≥1 Decacorn)",                   fmtPct(pDecacorn)],
                 [`Kelly optimal per year`,           `~${kellyAnnual}`],
                 [`Kelly total over ${DEPLOYMENT_YEARS}-yr`, `~${kellyTotal}`],
               ].map(([label, val]) => (
-                <div key={label} style={{ display: "flex", justifyContent: "space-between", padding: "7px 0", borderBottom: "1px solid #12121a", fontSize: 12 }}>
+                <div key={label} style={{ display: "flex", justifyContent: "space-between", padding: "7px 0", borderBottom: "1px solid #141414", fontSize: 12 }}>
                   <span style={{ color: "#666" }}>{label}</span>
                   <span className="serif" style={{ color: "#c8a94e" }}>{val}</span>
                 </div>
@@ -1879,13 +2191,39 @@ export default function App() {
           </div>
         )}
 
-        <div style={{ marginTop: 36, fontSize: 10, color: "#333", lineHeight: 1.7, borderTop: "1px solid #1a1a24", paddingTop: 18 }}>
+        <div style={{ marginTop: 36, fontSize: 10, color: "#333", lineHeight: 1.7, borderTop: "1px solid #141414", paddingTop: 18 }}>
           <div style={{ color: "#666", fontWeight: 500, marginBottom: 8, letterSpacing: "0.05em", textTransform: "uppercase", fontSize: 9 }}>Disclaimer</div>
           <div style={{ color: "#444", marginBottom: 10 }}>
             This tool is for educational and informational purposes only. It is <strong style={{ color: "#666" }}>not investment advice</strong>, not an offer to sell or a solicitation of an offer to buy any security, and not a recommendation to pursue any particular investment strategy. Past performance of venture capital funds does not guarantee future results. All venture investments involve significant risk including total loss of capital, illiquidity, and long holding periods. Before making any investment decision, <strong style={{ color: "#666" }}>conduct your own due diligence</strong> and consult with qualified legal, tax, and financial advisors. Team Ignite Ventures makes no representation that the modeled distributions, assumptions, or simulated outcomes reflect any actual fund's past or future performance.
           </div>
           <div style={{ color: "#333" }}>
-            Probabilistic framework. Portfolio size represents total positions over a {DEPLOYMENT_YEARS}-year fund deployment (standard VC investment period). Distributions: YC-calibrated (per Garry Tan, ~6% unicorn rate), industry average (per Carta 2018 and Correlation Ventures 21K financings dataset). Selection skill shifts tail probabilities per Horsley Bridge findings (top-tier 4.5% outlier rate, market average 2%, superstar ~8%). Monte Carlo: 3,000 sims/size for standard curves (scaled up to 12,000 at n≤20), 5,000 for high-precision mode, 5,000 for head-to-head. Reserves model simulates follow-on deployment into companies above the mark-up threshold. Net returns use J-curve distribution pacing with 2% mgmt × 10yr + 20% carry on profits above 1x.
+            Probabilistic framework. Portfolio size represents total positions over a {DEPLOYMENT_YEARS}-year fund deployment. Twelve outcome tiers span total loss through terracorn ($1T+); multiples are post-dilution returns to a ~$15M blended pre-seed/seed entry (Carta 2025 medians: ~$10M pre-seed SAFE caps, ~$20M seed post-money). Dilution applied per Carta per-round medians (Series A ~19%, B ~15%, C ~11%, D ~9%, plus option-pool refreshes): a seed investor retains roughly 79% of their stake through Series A, ~67% through B, ~59% through C, ~53% through D, and ~45% through E/F — so a $1.5B exit after Series C/D returns ~55x on a $15M entry, and a $15B exit after E/F returns ~400x. Three presets: industry average (cumulative $1B+ rate ≈2%, calibrated to Correlation Ventures' 21K-financings dataset, Carta cohort data, Horsley Bridge outlier rates, and PitchBook/CB Insights rare-outcome counts), YC-calibrated (cumulative unicorn rate ≈6% per Garry Tan's stated 6–12% for recent batches, low end used), and a 50/50 blend of the two. The terracorn base rate (≈0.002%) counts nine VC-backed companies at $1T+: Apple, Microsoft, Alphabet, Amazon, Meta, Nvidia, Tesla, SpaceX (June 2026 IPO), and OpenAI — the last a forward-looking inclusion at its $852B March 2026 mark with an S-1 filed. Selection skill shifts tail probabilities per Horsley Bridge findings via Ulu Ventures (top-tier 4.5% outlier rate, market average 2%, hypothetical superstar 7% — the latter is Ulu's construct, not an empirical observation). Monte Carlo: seeded per portfolio size for reproducible curves; 3,000 sims/size standard (scaled up to 12,000 at n≤20), 10,000 in high-precision mode, 5,000 per side for head-to-head. Reserves model simulates follow-on deployment into companies above the mark-up threshold. Fund economics: management fees (2% × 10yr) reduce investable capital to 80% of commitments and are returned to LPs before carry; recycling (adjustable, default 10% of committed capital) reinvests early proceeds; 20% carry applies via European waterfall (LPs receive 100% of distributions until commitments are returned, 80/20 thereafter); every invested cohort is held a standardized 10 years from its capital call, anchored to Crunchbase exit-timing data and SaaStr's 10.0-year median for $1B+ SaaS acquisitions.
+          </div>
+          <div style={{ marginTop: 14, fontSize: 10, color: "#555", lineHeight: 1.9 }}>
+            <span style={{ letterSpacing: "0.08em", textTransform: "uppercase", fontSize: 9, color: "#666" }}>Sources — read the underlying data yourself: </span>
+            <a href="https://sethlevine.com/archives/2014/08/venture-outcomes-are-even-more-skewed-than-you-think.html" target="_blank" rel="noopener noreferrer" style={{ color: "#8a7433" }}>Correlation Ventures 21K financings (via Seth Levine)</a>
+            {" · "}
+            <a href="https://www.saastr.com/carta-of-seed-funded-start-ups-fail-and-1-3-become-unicorns/" target="_blank" rel="noopener noreferrer" style={{ color: "#8a7433" }}>Carta Class of 2018 cohort</a>
+            {" · "}
+            <a href="https://carta.com/data/state-of-private-markets-q3-2025/" target="_blank" rel="noopener noreferrer" style={{ color: "#8a7433" }}>Carta seed/pre-seed valuations</a>
+            {" · "}
+            <a href="https://carta.com/data/founder-ownership-2026/" target="_blank" rel="noopener noreferrer" style={{ color: "#8a7433" }}>Carta dilution by round</a>
+            {" · "}
+            <a href="https://about.crunchbase.com/blog/startup-exit" target="_blank" rel="noopener noreferrer" style={{ color: "#8a7433" }}>Crunchbase exit timing</a>
+            {" · "}
+            <a href="https://www.saastr.com/dear-saastr-how-long-does-it-take-the-average-saas-startup-to-exit" target="_blank" rel="noopener noreferrer" style={{ color: "#8a7433" }}>SaaStr $1B+ exit timing</a>
+            {" · "}
+            <a href="https://uluventures.com/picking-winners-is-a-myth/" target="_blank" rel="noopener noreferrer" style={{ color: "#8a7433" }}>Horsley Bridge outlier rates (via Ulu Ventures)</a>
+            {" · "}
+            <a href="https://uluventures.com/invest/portfolio_construction/" target="_blank" rel="noopener noreferrer" style={{ color: "#8a7433" }}>Ulu Ventures portfolio construction</a>
+            {" · "}
+            <a href="https://x.com/garrytan/status/1953069914132238775" target="_blank" rel="noopener noreferrer" style={{ color: "#8a7433" }}>Garry Tan on YC unicorn rates</a>
+            {" · "}
+            <a href="https://finance.yahoo.com/news/y-combinator-leads-accelerators-unicorn-050000756.html" target="_blank" rel="noopener noreferrer" style={{ color: "#8a7433" }}>PitchBook accelerator analysis</a>
+            {" · "}
+            <a href="https://pitchbook.com/news/articles/unicorn-startups-list-trends" target="_blank" rel="noopener noreferrer" style={{ color: "#8a7433" }}>PitchBook unicorn tracker</a>
+            {" · "}
+            <a href="https://github.com/REPLACE-WITH-YOUR-ORG/volume-thesis" target="_blank" rel="noopener noreferrer" style={{ color: "#8a7433" }}>View source on GitHub</a>
           </div>
         </div>
       </div>
