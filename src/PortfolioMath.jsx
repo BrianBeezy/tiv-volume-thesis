@@ -2107,41 +2107,6 @@ export default function App() {
                     </span>
                   )}
                 </div>
-                <div className="stat-card" style={{ marginTop: 14 }}>
-                  <div className="label" style={{ marginBottom: 8 }}>
-                    <Tip text="Each tier's return multiple = (exit value ÷ entry post-money) × effective retention. Retention captures cumulative dilution from later rounds (Carta medians: ~19% at A, ~15% at B, ~11% at C, ~9% at D) plus, for the deepest tiers, a realization discount between peak marks and realized proceeds. Move a slider to see the tier's multiple change everywhere in the tool.">Dilution &amp; Entry Assumptions</Tip>
-                  </div>
-                  <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
-                    <span style={{ fontSize: 11, color: "#888" }}>Blended entry post-money</span>
-                    <input type="number" className="inline" step={1} style={{ width: 64, fontSize: 13 }} value={entryVal}
-                      onChange={e => setEntryVal(Math.min(60, Math.max(3, +e.target.value || 15)))} />
-                    <span style={{ fontSize: 11, color: "#666" }}>$M (Carta 2025 medians: $10M pre-seed caps, $20M seed post)</span>
-                  </div>
-                  {(customDist || baseDist).map((d, i) => {
-                    if (!EXIT_MIDS[i]) return null;
-                    const raw = EXIT_MIDS[i] / entryVal;
-                    const retention = Math.min(1, d.multiplier / raw);
-                    const setRetention = (r) => {
-                      const src2 = customDist || baseDist;
-                      const next = src2.map((x, j) => j === i ? { ...x, multiplier: Math.max(1, Math.round(raw * r)) } : { ...x });
-                      setCustomDist(next);
-                    };
-                    return (
-                      <div key={i} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
-                        <span style={{ fontSize: 14, flexShrink: 0 }}>{d.emoji}</span>
-                        <span style={{ fontSize: 10.5, color: "#888", width: 168, flexShrink: 0 }}>{d.label.replace(/ \(\d+x\)$/, "")}</span>
-                        <input type="range" min={0.1} max={1} step={0.01} value={retention}
-                          onChange={e => setRetention(+e.target.value)} style={{ flex: 1 }} />
-                        <span className="serif" style={{ fontSize: 11.5, color: "#c8a94e", width: 148, textAlign: "right", flexShrink: 0 }}>
-                          {(retention * 100).toFixed(0)}% of raw {raw >= 100 ? Math.round(raw).toLocaleString() : raw.toFixed(1)}x → {d.multiplier.toLocaleString()}x
-                        </span>
-                      </div>
-                    );
-                  })}
-                  <div style={{ fontSize: 10, color: "#555", marginTop: 8, lineHeight: 1.6 }}>
-                    Defaults imply ~90% retention on early exits declining to ~47% at unicorn, ~40% at decacorn, and 20–30% at the deepest tiers, where an additional realization discount (peak private marks vs realized proceeds) is applied on top of pure dilution. Sources linked in the footer.
-                  </div>
-                </div>
               </div>
               <div style={{ fontSize: 11, color: "#666", marginBottom: 14, lineHeight: 1.6 }}>
                 Currently showing: <span style={{ color: "#c8a94e" }}>{preset === "yc" ? "YC-calibrated (≈6% cumulative unicorn rate, per Garry Tan and PitchBook)" : preset === "blend" ? "50/50 blend of YC-calibrated and industry average (≈4% cumulative unicorn rate)" : "Industry average (≈2% cumulative unicorn rate, per Correlation Ventures, Carta, and Horsley Bridge)"}</span>. Multiples assume a ~$15M blended pre-seed/seed entry (Carta 2025 medians) net of dilution.
@@ -2170,6 +2135,42 @@ export default function App() {
                 </button>
               )}
             </div>
+            <div className="stat-card" style={{ marginBottom: 12 }}>
+              <div className="label" style={{ marginBottom: 8 }}>
+                <Tip text="Each tier's return multiple = (exit value ÷ entry post-money) × effective retention. Retention captures cumulative dilution from later rounds (Carta medians: ~19% at A, ~15% at B, ~11% at C, ~9% at D) plus, for the deepest tiers, a realization discount between peak marks and realized proceeds. Move a slider to see the tier's multiple change everywhere in the tool.">Dilution &amp; Entry Assumptions</Tip>
+              </div>
+              <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
+                <span style={{ fontSize: 11, color: "#888" }}>Blended entry post-money</span>
+                <input type="number" className="inline" step={1} style={{ width: 64, fontSize: 13 }} value={entryVal}
+                  onChange={e => setEntryVal(Math.min(60, Math.max(3, +e.target.value || 15)))} />
+                <span style={{ fontSize: 11, color: "#666" }}>$M (Carta 2025 medians: $10M pre-seed caps, $20M seed post)</span>
+              </div>
+              {(customDist || baseDist).map((d, i) => {
+                if (!EXIT_MIDS[i]) return null;
+                const raw = EXIT_MIDS[i] / entryVal;
+                const retention = Math.min(1, d.multiplier / raw);
+                const setRetention = (r) => {
+                  const src2 = customDist || baseDist;
+                  const next = src2.map((x, j) => j === i ? { ...x, multiplier: Math.max(1, Math.round(raw * r)) } : { ...x });
+                  setCustomDist(next);
+                };
+                return (
+                  <div key={i} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                    <span style={{ fontSize: 14, flexShrink: 0 }}>{d.emoji}</span>
+                    <span style={{ fontSize: 10.5, color: "#888", width: 168, flexShrink: 0 }}>{d.label.replace(/ \(\d+x\)$/, "")}</span>
+                    <input type="range" min={0.1} max={1} step={0.01} value={retention}
+                      onChange={e => setRetention(+e.target.value)} style={{ flex: 1 }} />
+                    <span className="serif" style={{ fontSize: 11.5, color: "#c8a94e", width: 148, textAlign: "right", flexShrink: 0 }}>
+                      {(retention * 100).toFixed(0)}% of raw {raw >= 100 ? Math.round(raw).toLocaleString() : raw.toFixed(1)}x → {d.multiplier.toLocaleString()}x
+                    </span>
+                  </div>
+                );
+              })}
+              <div style={{ fontSize: 10, color: "#555", marginTop: 8, lineHeight: 1.6 }}>
+                Defaults imply ~90% retention on early exits declining to ~47% at unicorn, ~40% at decacorn, and 20–30% at the deepest tiers, where an additional realization discount (peak private marks vs realized proceeds) is applied on top of pure dilution. Sources linked in the footer.
+              </div>
+            </div>
+
             <div className="stat-card">
               <div className="label" style={{ marginBottom: 10 }}>Live Stats at Current Portfolio Size</div>
               {[
