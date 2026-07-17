@@ -2224,7 +2224,7 @@ export default function App() {
             {" · "}
             <a href="https://pitchbook.com/news/articles/unicorn-startups-list-trends" target="_blank" rel="noopener noreferrer" style={{ color: "#8a7433" }}>PitchBook unicorn tracker</a>
             {" · "}
-            <a href="https://github.com/REPLACE-WITH-YOUR-ORG/volume-thesis" target="_blank" rel="noopener noreferrer" style={{ color: "#8a7433" }}>View source on GitHub</a>
+            <a href="https://github.com/BrianBeezy/tiv-volume-thesis" target="_blank" rel="noopener noreferrer" style={{ color: "#8a7433" }}>View source on GitHub</a>
           </div>
         </div>
       </div>
