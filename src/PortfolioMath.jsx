@@ -1025,11 +1025,11 @@ export default function App() {
       <div style={{ background: "#000000", borderBottom: "1px solid #1a1a1a", padding: "28px 32px 0" }}>
         <div style={{ maxWidth: 860, margin: "0 auto" }}>
           <div style={{ display: "flex", alignItems: "baseline", gap: 14, marginBottom: 6 }}>
-            <span className="serif" style={{ fontSize: 26, fontWeight: 700, color: "#c8a94e", letterSpacing: "-0.02em" }}>The Volume Thesis</span>
+            <span className="serif" style={{ fontSize: 26, fontWeight: 700, color: "#c8a94e", letterSpacing: "-0.02em" }}>The Power Law Simulator</span>
             <span style={{ fontSize: 10, color: "#555", letterSpacing: "0.15em", textTransform: "uppercase" }}>Team Ignite Ventures</span>
           </div>
           <p style={{ fontSize: 12, color: "#666", margin: "0 0 18px", lineHeight: 1.6, maxWidth: 620 }}>
-            The mathematics of venture capital's power-law distribution — why concentrated conviction underperforms volume, translated into the numbers LPs actually care about. All figures framed around a standard {DEPLOYMENT_YEARS}-year fund deployment.
+            An interactive model of how portfolio size shapes early-stage venture return distributions, under a standard {DEPLOYMENT_YEARS}-year deployment period. Adjust the assumptions and see how the math responds.
           </p>
 
           <div style={{ display: "flex", gap: 14, alignItems: "center", marginBottom: 16, flexWrap: "wrap" }}>
@@ -1074,6 +1074,10 @@ export default function App() {
                 </span>
                 <button className="reset-btn" onClick={resetAll}>Reset</button>
               </div>
+            </div>
+
+            <div style={{ fontSize: 10, color: "#555", lineHeight: 1.5, marginBottom: 14 }}>
+              The default parameters shown (reserves, recycling, deployment period, entry valuation) are illustrative and used for modeling purposes only. They do not represent the confirmed terms of any current or future Team Ignite Ventures fund.
             </div>
 
             {/* Primary row: always visible */}
@@ -1146,7 +1150,7 @@ export default function App() {
               {tabUsesExitYears && (
                 <div>
                   <div className="label" style={{ marginBottom: 3, fontSize: 9 }}>
-                    <Tip text="Proceeds recycled into new investments, as a percentage of committed capital. On a $100M fund, 10% recycling reinvests $10M of early exit proceeds. 20% fully offsets the management fee load; 0% means fees permanently reduce investable capital to 80% of commitments.">Recycling (% of committed)</Tip>
+                    <Tip text="Proceeds recycled into new investments, as a percentage of committed capital. At 10%, a tenth of early exit proceeds are reinvested; 20% fully offsets the management fee load; 0% means fees permanently reduce investable capital to 80% of commitments.">Recycling (% of committed)</Tip>
                   </div>
                   <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                     <input type="range" min={0} max={0.20} step={0.05} value={recyclePct} onChange={e => setRecyclePct(+e.target.value)} style={{ flex: 1 }} />
